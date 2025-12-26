@@ -1,407 +1,197 @@
 """
-Multi-Board PCB Manager - KiCad Action Plugin
-==============================================
-Hierarchical multi-board management with inter-board semantic connections.
+Multi-Board PCB Manager v4 - KiCad Action Plugin
+=================================================
+Hierarchical PCB workflow - like schematic sheets but for PCBs.
 
-Architecture:
-- ROOT: Main project view showing all sub-PCBs
-- SUB-PCBs: Independent boards with their own stackup/config
-- PORTS: Input/Output connection points for inter-board linking
-- CONNECTIONS: Semantic links between ports (no physical traces, for ERC)
+- Creates ONLY .kicad_pcb files (no new projects)
+- Creates schematic symlinks so "Update from Schematic" works
+- Root PCB shows block diagram of all sub-boards
+- Draw semantic inter-board connections for ERC
 
 Installation:
-    Copy this folder to your KiCad plugins directory:
-    - Linux: ~/.local/share/kicad/8.0/scripting/plugins/
-    - Windows: %APPDATA%/kicad/8.0/scripting/plugins/
-    - macOS: ~/Library/Preferences/kicad/8.0/scripting/plugins/
+    Copy to: ~/.local/share/kicad/8.0/scripting/plugins/
 """
 
 import pcbnew
 import wx
 import os
 import json
-import re
+import sys
 from pathlib import Path
-from typing import Optional, Dict, List, Any, Tuple, Set
+from typing import Optional, Dict, List, Tuple, Set
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
-from enum import Enum
 
 
 # ============================================================================
 # Data Models
 # ============================================================================
 
-class PortDirection(Enum):
-    INPUT = "input"
-    OUTPUT = "output"
-    BIDIRECTIONAL = "bidirectional"
-
-
 @dataclass
-class BoardPort:
-    """A connection point on a sub-PCB (like a hierarchical label)."""
+class SubBoardDefinition:
+    """A sub-PCB board (like a hierarchical sheet)."""
     name: str
-    direction: str  # "input", "output", "bidirectional"
-    net_name: str  # The actual net on this board
-    connector_ref: str = ""  # Reference designator of connector (e.g., "J1")
-    pin_number: str = ""  # Pin on the connector
+    pcb_filename: str
+    layers: int = 4
     description: str = ""
+    
+    # Position in root PCB block diagram (in mm)
+    block_x: float = 50.0
+    block_y: float = 50.0
+    block_width: float = 40.0
+    block_height: float = 30.0
+    
+    # Assigned schematic sheets (paths like "/Power/")
+    assigned_sheets: List[str] = field(default_factory=list)
+    
+    # Inter-board ports (connector pins that go to other boards)
+    ports: Dict[str, dict] = field(default_factory=dict)  # name -> {direction, net, x_offset, y_offset}
     
     def to_dict(self) -> Dict:
         return asdict(self)
     
     @classmethod
-    def from_dict(cls, data: Dict) -> 'BoardPort':
+    def from_dict(cls, data: Dict) -> 'SubBoardDefinition':
         return cls(**data)
 
 
 @dataclass
 class InterBoardConnection:
-    """A semantic connection between two ports on different boards."""
+    """Semantic connection between two board ports."""
     id: str
-    source_board: str
-    source_port: str
-    target_board: str
-    target_port: str
-    signal_name: str = ""  # Human-readable signal name
-    description: str = ""
-    
-    def to_dict(self) -> Dict:
-        return asdict(self)
-    
-    @classmethod
-    def from_dict(cls, data: Dict) -> 'InterBoardConnection':
-        return cls(**data)
-
-
-@dataclass 
-class SubPCB:
-    """Represents an independent sub-PCB in the hierarchy."""
-    name: str
-    pcb_filename: str = ""
-    description: str = ""
-    
-    # Board configuration
-    layers: int = 4
-    stackup_preset: str = "4-Layer Standard"
-    design_rules_preset: str = "Standard (6/6 mil)"
-    
-    # Position in root view (for visualization)
-    position_x: float = 0.0
-    position_y: float = 0.0
-    
-    # Ports for inter-board connections
-    ports: List[BoardPort] = field(default_factory=list)
-    
-    # Metadata
-    created_date: str = field(default_factory=lambda: datetime.now().isoformat())
-    modified_date: str = field(default_factory=lambda: datetime.now().isoformat())
-    
-    def to_dict(self) -> Dict:
-        d = asdict(self)
-        d['ports'] = [p.to_dict() if isinstance(p, BoardPort) else p for p in self.ports]
-        return d
-    
-    @classmethod
-    def from_dict(cls, data: Dict) -> 'SubPCB':
-        ports_data = data.pop('ports', [])
-        obj = cls(**data)
-        obj.ports = [BoardPort.from_dict(p) if isinstance(p, dict) else p for p in ports_data]
-        return obj
-    
-    def add_port(self, port: BoardPort):
-        self.ports.append(port)
-        self.modified_date = datetime.now().isoformat()
-    
-    def remove_port(self, port_name: str):
-        self.ports = [p for p in self.ports if p.name != port_name]
-        self.modified_date = datetime.now().isoformat()
-    
-    def get_port(self, name: str) -> Optional[BoardPort]:
-        for p in self.ports:
-            if p.name == name:
-                return p
-        return None
+    from_board: str
+    from_port: str
+    to_board: str
+    to_port: str
+    net_name: str = ""
 
 
 @dataclass
 class MultiBoardProject:
-    """Root project containing all sub-PCBs and their connections."""
-    name: str = "Multi-Board Project"
-    version: str = "2.0"
+    """Project configuration."""
+    version: str = "4.0"
+    root_schematic: str = ""  # The main schematic file
+    root_pcb: str = ""  # The root PCB (block diagram)
     
-    # Sub-PCBs
-    boards: Dict[str, SubPCB] = field(default_factory=dict)
-    
-    # Inter-board connections
+    boards: Dict[str, SubBoardDefinition] = field(default_factory=dict)
     connections: List[InterBoardConnection] = field(default_factory=list)
-    
-    # Project metadata
-    created_date: str = field(default_factory=lambda: datetime.now().isoformat())
-    modified_date: str = field(default_factory=lambda: datetime.now().isoformat())
     
     def to_dict(self) -> Dict:
         return {
-            "name": self.name,
             "version": self.version,
+            "root_schematic": self.root_schematic,
+            "root_pcb": self.root_pcb,
             "boards": {k: v.to_dict() for k, v in self.boards.items()},
-            "connections": [c.to_dict() if isinstance(c, InterBoardConnection) else c for c in self.connections],
-            "created_date": self.created_date,
-            "modified_date": self.modified_date,
+            "connections": [asdict(c) for c in self.connections],
         }
     
     @classmethod
     def from_dict(cls, data: Dict) -> 'MultiBoardProject':
         obj = cls(
-            name=data.get("name", "Multi-Board Project"),
-            version=data.get("version", "2.0"),
-            created_date=data.get("created_date", datetime.now().isoformat()),
-            modified_date=data.get("modified_date", datetime.now().isoformat()),
+            version=data.get("version", "4.0"),
+            root_schematic=data.get("root_schematic", ""),
+            root_pcb=data.get("root_pcb", ""),
         )
-        
-        boards_data = data.get("boards", {})
-        obj.boards = {k: SubPCB.from_dict(v) for k, v in boards_data.items()}
-        
-        connections_data = data.get("connections", [])
-        obj.connections = [InterBoardConnection.from_dict(c) for c in connections_data]
-        
+        for name, bdata in data.get("boards", {}).items():
+            obj.boards[name] = SubBoardDefinition.from_dict(bdata)
+        for cdata in data.get("connections", []):
+            obj.connections.append(InterBoardConnection(**cdata))
         return obj
 
 
 class ProjectManager:
-    """Manages the multi-board project configuration."""
+    """Manages the multi-board project."""
     
     CONFIG_FILENAME = ".kicad_multiboard.json"
     
-    def __init__(self, project_path: str):
-        self.project_path = Path(project_path)
-        self.config_file = self.project_path / self.CONFIG_FILENAME
-        self.project: MultiBoardProject = MultiBoardProject()
+    def __init__(self, project_path: Path):
+        self.project_path = project_path
+        self.config_file = project_path / self.CONFIG_FILENAME
+        self.project = MultiBoardProject()
+        
+        # Auto-detect root schematic and PCB
+        self._detect_root_files()
         self.load()
     
+    def _detect_root_files(self):
+        """Find the main .kicad_pro and associated files."""
+        # Find the main project file
+        for f in self.project_path.glob("*.kicad_pro"):
+            base_name = f.stem
+            sch_file = f.with_suffix(".kicad_sch")
+            pcb_file = f.with_suffix(".kicad_pcb")
+            
+            if sch_file.exists():
+                self.project.root_schematic = sch_file.name
+            if pcb_file.exists():
+                self.project.root_pcb = pcb_file.name
+            break
+    
     def load(self):
-        """Load project from file."""
         if self.config_file.exists():
             try:
                 with open(self.config_file, 'r') as f:
                     data = json.load(f)
                 self.project = MultiBoardProject.from_dict(data)
+                # Re-detect in case files changed
+                self._detect_root_files()
             except (json.JSONDecodeError, IOError) as e:
-                print(f"Error loading project: {e}")
-                self.project = MultiBoardProject()
+                print(f"Error loading config: {e}")
     
     def save(self):
-        """Save project to file."""
-        self.project.modified_date = datetime.now().isoformat()
         try:
             with open(self.config_file, 'w') as f:
                 json.dump(self.project.to_dict(), f, indent=2)
         except IOError as e:
-            print(f"Error saving project: {e}")
+            print(f"Error saving config: {e}")
     
-    def add_board(self, board: SubPCB) -> bool:
-        if board.name in self.project.boards:
-            return False
+    def create_sub_board(self, board: SubBoardDefinition) -> Tuple[bool, str]:
+        """Create a new sub-board PCB file with schematic symlink."""
+        
+        pcb_path = self.project_path / board.pcb_filename
+        sch_symlink = self.project_path / (Path(board.pcb_filename).stem + ".kicad_sch")
+        
+        # Check for existing files
+        if pcb_path.exists():
+            return False, f"PCB file already exists: {board.pcb_filename}"
+        
+        # 1. Create the PCB file (ONLY .kicad_pcb, no .kicad_pro)
+        success = self._create_pcb_file(pcb_path, board.layers)
+        if not success:
+            return False, "Failed to create PCB file"
+        
+        # 2. Create schematic symlink so "Update from Schematic" works
+        if not sch_symlink.exists() and self.project.root_schematic:
+            success, msg = self._create_schematic_link(sch_symlink)
+            if not success:
+                return True, f"PCB created but schematic link failed: {msg}"
+        
+        # 3. Add to project
         self.project.boards[board.name] = board
         self.save()
-        return True
+        
+        return True, f"Created {board.pcb_filename} with schematic link"
     
-    def remove_board(self, name: str) -> bool:
-        if name not in self.project.boards:
-            return False
+    def _create_pcb_file(self, filepath: Path, layer_count: int) -> bool:
+        """Create an empty PCB file with specified layers."""
         
-        # Remove all connections involving this board
-        self.project.connections = [
-            c for c in self.project.connections 
-            if c.source_board != name and c.target_board != name
-        ]
-        
-        del self.project.boards[name]
-        self.save()
-        return True
-    
-    def get_board(self, name: str) -> Optional[SubPCB]:
-        return self.project.boards.get(name)
-    
-    def add_connection(self, conn: InterBoardConnection) -> bool:
-        # Validate boards and ports exist
-        src_board = self.get_board(conn.source_board)
-        tgt_board = self.get_board(conn.target_board)
-        
-        if not src_board or not tgt_board:
-            return False
-        
-        if not src_board.get_port(conn.source_port):
-            return False
-        if not tgt_board.get_port(conn.target_port):
-            return False
-        
-        self.project.connections.append(conn)
-        self.save()
-        return True
-    
-    def remove_connection(self, conn_id: str) -> bool:
-        original_len = len(self.project.connections)
-        self.project.connections = [c for c in self.project.connections if c.id != conn_id]
-        if len(self.project.connections) < original_len:
-            self.save()
-            return True
-        return False
-    
-    def get_unconnected_ports(self) -> List[Tuple[str, BoardPort]]:
-        """Find all ports that are not connected to anything."""
-        connected_ports = set()
-        for conn in self.project.connections:
-            connected_ports.add((conn.source_board, conn.source_port))
-            connected_ports.add((conn.target_board, conn.target_port))
-        
-        unconnected = []
-        for board_name, board in self.project.boards.items():
-            for port in board.ports:
-                if (board_name, port.name) not in connected_ports:
-                    unconnected.append((board_name, port))
-        
-        return unconnected
-    
-    def run_connectivity_check(self) -> List[str]:
-        """Run ERC-like check on inter-board connections."""
-        errors = []
-        warnings = []
-        
-        # Check for unconnected output ports
-        for board_name, port in self.get_unconnected_ports():
-            if port.direction == "output":
-                errors.append(f"ERROR: Unconnected output '{port.name}' on board '{board_name}'")
-            elif port.direction == "input":
-                warnings.append(f"WARNING: Unconnected input '{port.name}' on board '{board_name}'")
+        # Build copper layer definitions
+        copper_layers = []
+        for i in range(layer_count):
+            if i == 0:
+                copper_layers.append('    (0 "F.Cu" signal)')
+            elif i == layer_count - 1:
+                copper_layers.append('    (31 "B.Cu" signal)')
             else:
-                warnings.append(f"WARNING: Unconnected port '{port.name}' on board '{board_name}'")
+                copper_layers.append(f'    ({i} "In{i}.Cu" signal)')
         
-        # Check for direction mismatches
-        for conn in self.project.connections:
-            src_board = self.get_board(conn.source_board)
-            tgt_board = self.get_board(conn.target_board)
-            
-            if src_board and tgt_board:
-                src_port = src_board.get_port(conn.source_port)
-                tgt_port = tgt_board.get_port(conn.target_port)
-                
-                if src_port and tgt_port:
-                    # Output should connect to Input (or bidirectional)
-                    if src_port.direction == "output" and tgt_port.direction == "output":
-                        errors.append(
-                            f"ERROR: Output-to-Output connection: "
-                            f"{conn.source_board}.{conn.source_port} -> {conn.target_board}.{conn.target_port}"
-                        )
-                    elif src_port.direction == "input" and tgt_port.direction == "input":
-                        errors.append(
-                            f"ERROR: Input-to-Input connection: "
-                            f"{conn.source_board}.{conn.source_port} -> {conn.target_board}.{conn.target_port}"
-                        )
+        layers_str = "\n".join(copper_layers)
         
-        return errors + warnings
-
-
-# ============================================================================
-# Stackup and Design Rule Presets
-# ============================================================================
-
-STACKUP_PRESETS = {
-    "2-Layer Standard": {"layers": 2, "thickness": 1.6},
-    "4-Layer Standard": {"layers": 4, "thickness": 1.6},
-    "4-Layer Sig-Gnd-Pwr-Sig": {"layers": 4, "thickness": 1.6},
-    "6-Layer Standard": {"layers": 6, "thickness": 1.6},
-    "6-Layer High-Speed": {"layers": 6, "thickness": 1.6},
-    "8-Layer Standard": {"layers": 8, "thickness": 1.6},
-}
-
-DESIGN_RULE_PRESETS = {
-    "Standard (6/6 mil)": {"min_track": 0.15, "min_clearance": 0.15},
-    "Fine Pitch (4/4 mil)": {"min_track": 0.1, "min_clearance": 0.1},
-    "HDI (3/3 mil)": {"min_track": 0.075, "min_clearance": 0.075},
-    "Relaxed (8/8 mil)": {"min_track": 0.2, "min_clearance": 0.2},
-}
-
-
-# ============================================================================
-# Utility Functions  
-# ============================================================================
-
-def get_nets_from_board(board: pcbnew.BOARD) -> List[str]:
-    """Extract all net names from a board."""
-    nets = []
-    for net in board.GetNetInfo().NetsByName():
-        net_name = net
-        if net_name and net_name != "":
-            nets.append(net_name)
-    return sorted(nets)
-
-
-def get_connectors_from_board(board: pcbnew.BOARD) -> List[Tuple[str, str]]:
-    """Extract connector references and their pads."""
-    connectors = []
-    for fp in board.GetFootprints():
-        ref = fp.GetReference()
-        # Common connector prefixes
-        if ref.startswith(('J', 'P', 'CN', 'CON', 'X')):
-            connectors.append((ref, fp.GetValue()))
-    return sorted(connectors)
-
-
-def generate_connection_id() -> str:
-    """Generate a unique connection ID."""
-    import uuid
-    return str(uuid.uuid4())[:8]
-
-
-def create_empty_pcb(filepath: Path, layer_count: int = 4) -> bool:
-    """Create an empty PCB file with the specified layer count."""
-    try:
-        board = pcbnew.BOARD()
-        
-        # Set copper layer count using the board's design settings
-        # KiCad 8.0 API
-        board.SetCopperLayerCount(layer_count)
-        
-        # Save the board
-        pcbnew.SaveBoard(str(filepath), board)
-        return True
-    except Exception as e:
-        print(f"Error creating PCB: {e}")
-        # Try alternative method for different KiCad versions
-        try:
-            board = pcbnew.BOARD()
-            # Alternative: use GetDesignSettings
-            ds = board.GetDesignSettings()
-            board.SetCopperLayerCount(layer_count)
-            pcbnew.SaveBoard(str(filepath), board)
-            return True
-        except Exception as e2:
-            print(f"Alternative method also failed: {e2}")
-            # Last resort: create minimal kicad_pcb file manually
-            return create_pcb_file_manual(filepath, layer_count)
-
-
-def create_pcb_file_manual(filepath: Path, layer_count: int = 4) -> bool:
-    """Create a PCB file manually by writing the s-expression format."""
-    
-    # Build layer definitions
-    copper_layers = []
-    for i in range(layer_count):
-        if i == 0:
-            copper_layers.append(f'    (0 "F.Cu" signal)')
-        elif i == layer_count - 1:
-            copper_layers.append(f'    ({31} "B.Cu" signal)')
-        else:
-            copper_layers.append(f'    ({i} "In{i}.Cu" signal)')
-    
-    layers_str = "\n".join(copper_layers)
-    
-    content = f'''(kicad_pcb
+        # Minimal PCB content - NO project reference
+        content = f'''(kicad_pcb
   (version 20240108)
-  (generator "multi_board_manager")
-  (generator_version "1.0")
+  (generator "pcbnew")
+  (generator_version "8.0")
   (general
     (thickness 1.6)
     (legacy_teardrops no)
@@ -481,32 +271,241 @@ def create_pcb_file_manual(filepath: Path, layer_count: int = 4) -> bool:
   (net 0 "")
 )
 '''
+        try:
+            with open(filepath, 'w') as f:
+                f.write(content)
+            return True
+        except IOError:
+            return False
     
-    try:
-        with open(filepath, 'w') as f:
-            f.write(content)
+    def _create_schematic_link(self, link_path: Path) -> Tuple[bool, str]:
+        """Create a symbolic link to the root schematic."""
+        
+        root_sch_path = self.project_path / self.project.root_schematic
+        
+        if not root_sch_path.exists():
+            return False, f"Root schematic not found: {self.project.root_schematic}"
+        
+        try:
+            # On Windows, might need admin rights or developer mode for symlinks
+            if sys.platform == "win32":
+                # Try symlink first
+                try:
+                    link_path.symlink_to(root_sch_path.name)
+                    return True, "Symlink created"
+                except OSError:
+                    # Fallback: create a minimal redirect schematic
+                    # This won't fully work but at least won't crash
+                    return self._create_redirect_schematic(link_path, root_sch_path)
+            else:
+                # Unix - symlinks work normally
+                link_path.symlink_to(root_sch_path.name)
+                return True, "Symlink created"
+                
+        except Exception as e:
+            return False, str(e)
+    
+    def _create_redirect_schematic(self, link_path: Path, target_path: Path) -> Tuple[bool, str]:
+        """Windows fallback: copy the schematic (not ideal but works)."""
+        import shutil
+        try:
+            shutil.copy2(target_path, link_path)
+            return True, "Schematic copied (symlinks not available)"
+        except Exception as e:
+            return False, str(e)
+    
+    def delete_auto_created_project(self, board_name: str) -> bool:
+        """Delete any auto-created .kicad_pro files for sub-boards."""
+        board = self.project.boards.get(board_name)
+        if not board:
+            return False
+        
+        # KiCad auto-creates project files with same name as PCB
+        pro_file = self.project_path / (Path(board.pcb_filename).stem + ".kicad_pro")
+        
+        if pro_file.exists():
+            try:
+                pro_file.unlink()
+                return True
+            except:
+                return False
         return True
-    except IOError as e:
-        print(f"Error writing PCB file: {e}")
-        return False
+    
+    def cleanup_auto_projects(self) -> List[str]:
+        """Remove all auto-created project files for sub-boards."""
+        cleaned = []
+        for board in self.project.boards.values():
+            pro_file = self.project_path / (Path(board.pcb_filename).stem + ".kicad_pro")
+            if pro_file.exists():
+                try:
+                    pro_file.unlink()
+                    cleaned.append(pro_file.name)
+                except:
+                    pass
+        return cleaned
+    
+    def update_root_pcb_block_diagram(self) -> Tuple[bool, str]:
+        """Update the root PCB with board blocks and connection lines."""
+        
+        if not self.project.root_pcb:
+            return False, "No root PCB defined"
+        
+        root_pcb_path = self.project_path / self.project.root_pcb
+        if not root_pcb_path.exists():
+            return False, f"Root PCB not found: {self.project.root_pcb}"
+        
+        try:
+            board = pcbnew.LoadBoard(str(root_pcb_path))
+        except Exception as e:
+            return False, f"Failed to load root PCB: {e}"
+        
+        # Use User.1 layer for block diagram
+        block_layer = pcbnew.User_1
+        
+        # Clear existing block diagram elements (look for items with specific prefix in their text)
+        # Note: This is tricky - for now, we'll just add new elements
+        
+        # Draw each sub-board as a rectangle with name
+        for name, sub_board in self.project.boards.items():
+            self._draw_board_block(board, sub_board, block_layer)
+        
+        # Draw connections
+        for conn in self.project.connections:
+            self._draw_connection(board, conn, block_layer)
+        
+        # Save
+        try:
+            pcbnew.SaveBoard(str(root_pcb_path), board)
+            return True, "Block diagram updated in root PCB (User.1 layer)"
+        except Exception as e:
+            return False, f"Failed to save: {e}"
+    
+    def _draw_board_block(self, board: pcbnew.BOARD, sub_board: SubBoardDefinition, layer: int):
+        """Draw a rectangle representing a sub-board."""
+        
+        x = pcbnew.FromMM(sub_board.block_x)
+        y = pcbnew.FromMM(sub_board.block_y)
+        w = pcbnew.FromMM(sub_board.block_width)
+        h = pcbnew.FromMM(sub_board.block_height)
+        
+        # Draw rectangle
+        rect = pcbnew.PCB_SHAPE(board)
+        rect.SetShape(pcbnew.SHAPE_T_RECT)
+        rect.SetStart(pcbnew.VECTOR2I(x, y))
+        rect.SetEnd(pcbnew.VECTOR2I(x + w, y + h))
+        rect.SetLayer(layer)
+        rect.SetWidth(pcbnew.FromMM(0.3))
+        board.Add(rect)
+        
+        # Add board name as text
+        text = pcbnew.PCB_TEXT(board)
+        text.SetText(sub_board.name)
+        text.SetPosition(pcbnew.VECTOR2I(x + w // 2, y + h // 2))
+        text.SetLayer(layer)
+        text.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(2), pcbnew.FromMM(2)))
+        text.SetHorizJustify(pcbnew.GR_TEXT_H_ALIGN_CENTER)
+        text.SetVertJustify(pcbnew.GR_TEXT_V_ALIGN_CENTER)
+        board.Add(text)
+        
+        # Add layer count label
+        layer_text = pcbnew.PCB_TEXT(board)
+        layer_text.SetText(f"{sub_board.layers}L")
+        layer_text.SetPosition(pcbnew.VECTOR2I(x + w // 2, y + h - pcbnew.FromMM(3)))
+        layer_text.SetLayer(layer)
+        layer_text.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(1.5), pcbnew.FromMM(1.5)))
+        layer_text.SetHorizJustify(pcbnew.GR_TEXT_H_ALIGN_CENTER)
+        board.Add(layer_text)
+        
+        # Draw ports as small rectangles on edges
+        for port_name, port_info in sub_board.ports.items():
+            self._draw_port(board, sub_board, port_name, port_info, layer)
+    
+    def _draw_port(self, board: pcbnew.BOARD, sub_board: SubBoardDefinition, 
+                   port_name: str, port_info: dict, layer: int):
+        """Draw a port indicator on a board block."""
+        
+        base_x = pcbnew.FromMM(sub_board.block_x)
+        base_y = pcbnew.FromMM(sub_board.block_y)
+        
+        x_off = pcbnew.FromMM(port_info.get('x_offset', 0))
+        y_off = pcbnew.FromMM(port_info.get('y_offset', 0))
+        
+        px = base_x + x_off
+        py = base_y + y_off
+        
+        # Small circle for port
+        circle = pcbnew.PCB_SHAPE(board)
+        circle.SetShape(pcbnew.SHAPE_T_CIRCLE)
+        circle.SetCenter(pcbnew.VECTOR2I(px, py))
+        circle.SetEnd(pcbnew.VECTOR2I(px + pcbnew.FromMM(1), py))
+        circle.SetLayer(layer)
+        circle.SetWidth(pcbnew.FromMM(0.2))
+        board.Add(circle)
+        
+        # Port name
+        text = pcbnew.PCB_TEXT(board)
+        text.SetText(port_name)
+        text.SetPosition(pcbnew.VECTOR2I(px + pcbnew.FromMM(2), py))
+        text.SetLayer(layer)
+        text.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(1), pcbnew.FromMM(1)))
+        board.Add(text)
+    
+    def _draw_connection(self, board: pcbnew.BOARD, conn: InterBoardConnection, layer: int):
+        """Draw a line between two board ports."""
+        
+        from_board = self.project.boards.get(conn.from_board)
+        to_board = self.project.boards.get(conn.to_board)
+        
+        if not from_board or not to_board:
+            return
+        
+        from_port = from_board.ports.get(conn.from_port, {})
+        to_port = to_board.ports.get(conn.to_port, {})
+        
+        # Calculate positions
+        x1 = pcbnew.FromMM(from_board.block_x + from_port.get('x_offset', from_board.block_width))
+        y1 = pcbnew.FromMM(from_board.block_y + from_port.get('y_offset', from_board.block_height / 2))
+        
+        x2 = pcbnew.FromMM(to_board.block_x + to_port.get('x_offset', 0))
+        y2 = pcbnew.FromMM(to_board.block_y + to_port.get('y_offset', to_board.block_height / 2))
+        
+        # Draw line
+        line = pcbnew.PCB_SHAPE(board)
+        line.SetShape(pcbnew.SHAPE_T_SEGMENT)
+        line.SetStart(pcbnew.VECTOR2I(int(x1), int(y1)))
+        line.SetEnd(pcbnew.VECTOR2I(int(x2), int(y2)))
+        line.SetLayer(layer)
+        line.SetWidth(pcbnew.FromMM(0.25))
+        board.Add(line)
+        
+        # Add net name label at midpoint
+        if conn.net_name:
+            mx = (x1 + x2) // 2
+            my = (y1 + y2) // 2
+            
+            text = pcbnew.PCB_TEXT(board)
+            text.SetText(conn.net_name)
+            text.SetPosition(pcbnew.VECTOR2I(int(mx), int(my) - pcbnew.FromMM(2)))
+            text.SetLayer(layer)
+            text.SetTextSize(pcbnew.VECTOR2I(pcbnew.FromMM(1), pcbnew.FromMM(1)))
+            text.SetHorizJustify(pcbnew.GR_TEXT_H_ALIGN_CENTER)
+            board.Add(text)
 
 
 # ============================================================================
 # Dialog Classes
 # ============================================================================
 
-class PortEditorDialog(wx.Dialog):
-    """Dialog for editing ports on a sub-PCB."""
+class NewSubBoardDialog(wx.Dialog):
+    """Dialog to create a new sub-board PCB."""
     
-    def __init__(self, parent, board: SubPCB, pcb_board: Optional[pcbnew.BOARD] = None):
-        super().__init__(parent, title=f"Port Editor - {board.name}", size=(700, 500))
+    def __init__(self, parent, project_mgr: ProjectManager):
+        super().__init__(parent, title="New Sub-Board PCB", size=(500, 400))
         
-        self.board = board
-        self.pcb_board = pcb_board
-        self.ports = list(board.ports)  # Work on a copy
+        self.project_mgr = project_mgr
+        self.board: Optional[SubBoardDefinition] = None
         
         self.init_ui()
-        self.refresh_list()
     
     def init_ui(self):
         panel = wx.Panel(self)
@@ -515,196 +514,36 @@ class PortEditorDialog(wx.Dialog):
         # Info text
         info = wx.StaticText(
             panel,
-            label="Define INPUT/OUTPUT ports for inter-board connections.\n"
-                  "Ports represent signals that connect to other boards (e.g., via connectors)."
+            label="Create a new sub-board PCB file.\n"
+                  "This creates ONLY a .kicad_pcb file (no new project).\n"
+                  "A schematic link will be created so 'Update from Schematic' works."
         )
         main_sizer.Add(info, 0, wx.ALL, 10)
         
-        # Port list
-        self.list_ctrl = wx.ListCtrl(
-            panel,
-            style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SUNKEN
-        )
-        self.list_ctrl.InsertColumn(0, "Port Name", width=120)
-        self.list_ctrl.InsertColumn(1, "Direction", width=100)
-        self.list_ctrl.InsertColumn(2, "Net Name", width=120)
-        self.list_ctrl.InsertColumn(3, "Connector", width=80)
-        self.list_ctrl.InsertColumn(4, "Pin", width=50)
-        self.list_ctrl.InsertColumn(5, "Description", width=150)
-        
-        main_sizer.Add(self.list_ctrl, 1, wx.EXPAND | wx.ALL, 10)
-        
-        # Buttons for port management
-        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        
-        self.btn_add = wx.Button(panel, label="Add Port")
-        self.btn_edit = wx.Button(panel, label="Edit Port")
-        self.btn_remove = wx.Button(panel, label="Remove Port")
-        self.btn_auto = wx.Button(panel, label="Auto-detect from Connectors")
-        
-        self.btn_add.Bind(wx.EVT_BUTTON, self.on_add_port)
-        self.btn_edit.Bind(wx.EVT_BUTTON, self.on_edit_port)
-        self.btn_remove.Bind(wx.EVT_BUTTON, self.on_remove_port)
-        self.btn_auto.Bind(wx.EVT_BUTTON, self.on_auto_detect)
-        
-        btn_sizer.Add(self.btn_add, 0, wx.ALL, 5)
-        btn_sizer.Add(self.btn_edit, 0, wx.ALL, 5)
-        btn_sizer.Add(self.btn_remove, 0, wx.ALL, 5)
-        btn_sizer.AddStretchSpacer()
-        btn_sizer.Add(self.btn_auto, 0, wx.ALL, 5)
-        
-        main_sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 5)
-        
-        # Dialog buttons
-        dialog_btn_sizer = wx.StdDialogButtonSizer()
-        btn_ok = wx.Button(panel, wx.ID_OK)
-        btn_cancel = wx.Button(panel, wx.ID_CANCEL)
-        btn_ok.Bind(wx.EVT_BUTTON, self.on_ok)
-        dialog_btn_sizer.AddButton(btn_ok)
-        dialog_btn_sizer.AddButton(btn_cancel)
-        dialog_btn_sizer.Realize()
-        
-        main_sizer.Add(dialog_btn_sizer, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
-        
-        panel.SetSizer(main_sizer)
-    
-    def refresh_list(self):
-        self.list_ctrl.DeleteAllItems()
-        for i, port in enumerate(self.ports):
-            idx = self.list_ctrl.InsertItem(i, port.name)
-            self.list_ctrl.SetItem(idx, 1, port.direction)
-            self.list_ctrl.SetItem(idx, 2, port.net_name)
-            self.list_ctrl.SetItem(idx, 3, port.connector_ref)
-            self.list_ctrl.SetItem(idx, 4, port.pin_number)
-            self.list_ctrl.SetItem(idx, 5, port.description)
-    
-    def on_add_port(self, event):
-        dlg = SinglePortDialog(self, self.pcb_board)
-        if dlg.ShowModal() == wx.ID_OK and dlg.port:
-            self.ports.append(dlg.port)
-            self.refresh_list()
-        dlg.Destroy()
-    
-    def on_edit_port(self, event):
-        idx = self.list_ctrl.GetFirstSelected()
-        if idx < 0:
-            wx.MessageBox("Please select a port to edit.", "No Selection", wx.OK | wx.ICON_WARNING)
-            return
-        
-        port = self.ports[idx]
-        dlg = SinglePortDialog(self, self.pcb_board, port)
-        if dlg.ShowModal() == wx.ID_OK and dlg.port:
-            self.ports[idx] = dlg.port
-            self.refresh_list()
-        dlg.Destroy()
-    
-    def on_remove_port(self, event):
-        idx = self.list_ctrl.GetFirstSelected()
-        if idx < 0:
-            wx.MessageBox("Please select a port to remove.", "No Selection", wx.OK | wx.ICON_WARNING)
-            return
-        
-        del self.ports[idx]
-        self.refresh_list()
-    
-    def on_auto_detect(self, event):
-        """Auto-detect ports from connector footprints."""
-        if not self.pcb_board:
-            wx.MessageBox(
-                "No PCB loaded. Open the board's PCB file first to auto-detect.",
-                "No PCB",
-                wx.OK | wx.ICON_WARNING
-            )
-            return
-        
-        connectors = get_connectors_from_board(self.pcb_board)
-        if not connectors:
-            wx.MessageBox("No connectors found (J*, P*, CN*, CON*, X*).", "No Connectors", wx.OK | wx.ICON_INFO)
-            return
-        
-        # For each connector, create a bidirectional port
-        added = 0
-        for ref, value in connectors:
-            # Check if port already exists
-            existing_names = {p.name for p in self.ports}
-            if ref not in existing_names:
-                port = BoardPort(
-                    name=ref,
-                    direction="bidirectional",
-                    net_name="",
-                    connector_ref=ref,
-                    description=f"Auto-detected: {value}"
-                )
-                self.ports.append(port)
-                added += 1
-        
-        self.refresh_list()
-        wx.MessageBox(f"Added {added} ports from connectors.", "Auto-detect Complete", wx.OK | wx.ICON_INFO)
-    
-    def on_ok(self, event):
-        self.board.ports = self.ports
-        self.board.modified_date = datetime.now().isoformat()
-        self.EndModal(wx.ID_OK)
-
-
-class SinglePortDialog(wx.Dialog):
-    """Dialog for adding/editing a single port."""
-    
-    def __init__(self, parent, pcb_board: Optional[pcbnew.BOARD] = None, port: Optional[BoardPort] = None):
-        title = "Edit Port" if port else "Add Port"
-        super().__init__(parent, title=title, size=(450, 350))
-        
-        self.pcb_board = pcb_board
-        self.port: Optional[BoardPort] = None
-        self.edit_port = port
-        
-        self.init_ui()
-        
-        if port:
-            self.populate_from_port(port)
-    
-    def init_ui(self):
-        panel = wx.Panel(self)
-        main_sizer = wx.BoxSizer(wx.VERTICAL)
-        
-        grid = wx.FlexGridSizer(6, 2, 10, 10)
+        # Form
+        grid = wx.FlexGridSizer(4, 2, 10, 10)
         grid.AddGrowableCol(1, 1)
         
-        # Port name
-        grid.Add(wx.StaticText(panel, label="Port Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        # Name
+        grid.Add(wx.StaticText(panel, label="Board Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.txt_name = wx.TextCtrl(panel)
+        self.txt_name.Bind(wx.EVT_TEXT, self.on_name_changed)
         grid.Add(self.txt_name, 1, wx.EXPAND)
         
-        # Direction
-        grid.Add(wx.StaticText(panel, label="Direction:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.combo_direction = wx.ComboBox(
-            panel,
-            choices=["input", "output", "bidirectional"],
-            style=wx.CB_READONLY
-        )
-        self.combo_direction.SetSelection(2)  # Default to bidirectional
-        grid.Add(self.combo_direction, 1, wx.EXPAND)
+        # Filename (auto-generated)
+        grid.Add(wx.StaticText(panel, label="PCB Filename:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.txt_filename = wx.TextCtrl(panel)
+        self.txt_filename.SetEditable(False)
+        self.txt_filename.SetBackgroundColour(wx.Colour(240, 240, 240))
+        grid.Add(self.txt_filename, 1, wx.EXPAND)
         
-        # Net name
-        grid.Add(wx.StaticText(panel, label="Net Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        if self.pcb_board:
-            nets = get_nets_from_board(self.pcb_board)
-            self.combo_net = wx.ComboBox(panel, choices=nets)
-        else:
-            self.combo_net = wx.ComboBox(panel, choices=[])
-        grid.Add(self.combo_net, 1, wx.EXPAND)
-        
-        # Connector reference
-        grid.Add(wx.StaticText(panel, label="Connector Ref:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_connector = wx.TextCtrl(panel)
-        self.txt_connector.SetHint("e.g., J1, P2, CN1")
-        grid.Add(self.txt_connector, 1, wx.EXPAND)
-        
-        # Pin number
-        grid.Add(wx.StaticText(panel, label="Pin Number:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_pin = wx.TextCtrl(panel)
-        self.txt_pin.SetHint("e.g., 1, A1")
-        grid.Add(self.txt_pin, 1, wx.EXPAND)
+        # Layers
+        grid.Add(wx.StaticText(panel, label="Copper Layers:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        layer_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.spin_layers = wx.SpinCtrl(panel, min=2, max=32, initial=4)
+        layer_sizer.Add(self.spin_layers, 0)
+        layer_sizer.Add(wx.StaticText(panel, label="  (2, 4, 6, 8...)"), 0, wx.ALIGN_CENTER_VERTICAL)
+        grid.Add(layer_sizer, 1)
         
         # Description
         grid.Add(wx.StaticText(panel, label="Description:"), 0, wx.ALIGN_CENTER_VERTICAL)
@@ -713,55 +552,92 @@ class SinglePortDialog(wx.Dialog):
         
         main_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 20)
         
-        # Dialog buttons
-        btn_sizer = wx.StdDialogButtonSizer()
-        btn_ok = wx.Button(panel, wx.ID_OK)
-        btn_cancel = wx.Button(panel, wx.ID_CANCEL)
-        btn_ok.Bind(wx.EVT_BUTTON, self.on_ok)
-        btn_sizer.AddButton(btn_ok)
-        btn_sizer.AddButton(btn_cancel)
-        btn_sizer.Realize()
+        # Schematic info
+        sch_info = wx.StaticBox(panel, label="Schematic Association")
+        sch_sizer = wx.StaticBoxSizer(sch_info, wx.VERTICAL)
         
-        main_sizer.Add(btn_sizer, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        root_sch = self.project_mgr.project.root_schematic or "(not detected)"
+        sch_label = wx.StaticText(panel, label=f"Root Schematic: {root_sch}")
+        sch_sizer.Add(sch_label, 0, wx.ALL, 5)
+        
+        link_label = wx.StaticText(
+            panel, 
+            label="A symbolic link will be created so this PCB can\n"
+                  "use 'Update PCB from Schematic' with the root schematic."
+        )
+        link_label.SetForegroundColour(wx.Colour(80, 80, 80))
+        sch_sizer.Add(link_label, 0, wx.ALL, 5)
+        
+        main_sizer.Add(sch_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 20)
+        
+        main_sizer.AddStretchSpacer()
+        
+        # Buttons
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        btn_sizer.AddStretchSpacer()
+        
+        self.btn_create = wx.Button(panel, label="Create Sub-Board")
+        self.btn_cancel = wx.Button(panel, wx.ID_CANCEL, label="Cancel")
+        
+        self.btn_create.Bind(wx.EVT_BUTTON, self.on_create)
+        
+        btn_sizer.Add(self.btn_create, 0, wx.ALL, 5)
+        btn_sizer.Add(self.btn_cancel, 0, wx.ALL, 5)
+        
+        main_sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 10)
         
         panel.SetSizer(main_sizer)
+        self.btn_create.SetDefault()
     
-    def populate_from_port(self, port: BoardPort):
-        self.txt_name.SetValue(port.name)
-        
-        dir_idx = ["input", "output", "bidirectional"].index(port.direction)
-        self.combo_direction.SetSelection(dir_idx)
-        
-        self.combo_net.SetValue(port.net_name)
-        self.txt_connector.SetValue(port.connector_ref)
-        self.txt_pin.SetValue(port.pin_number)
-        self.txt_desc.SetValue(port.description)
+    def on_name_changed(self, event):
+        name = self.txt_name.GetValue().strip()
+        if name:
+            # Generate filename from name
+            safe_name = "".join(c if c.isalnum() or c in "_-" else "_" for c in name)
+            self.txt_filename.SetValue(f"{safe_name}.kicad_pcb")
+        else:
+            self.txt_filename.SetValue("")
     
-    def on_ok(self, event):
+    def on_create(self, event):
         name = self.txt_name.GetValue().strip()
         if not name:
-            wx.MessageBox("Please enter a port name.", "Validation Error", wx.OK | wx.ICON_ERROR)
+            wx.MessageBox("Please enter a board name.", "Error", wx.OK | wx.ICON_ERROR)
             return
         
-        self.port = BoardPort(
+        if name in self.project_mgr.project.boards:
+            wx.MessageBox("A board with this name already exists.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        filename = self.txt_filename.GetValue()
+        if not filename:
+            wx.MessageBox("Invalid filename.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        # Check if PCB file already exists
+        pcb_path = self.project_mgr.project_path / filename
+        if pcb_path.exists():
+            wx.MessageBox(f"File already exists: {filename}", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        self.board = SubBoardDefinition(
             name=name,
-            direction=self.combo_direction.GetValue(),
-            net_name=self.combo_net.GetValue(),
-            connector_ref=self.txt_connector.GetValue().strip(),
-            pin_number=self.txt_pin.GetValue().strip(),
-            description=self.txt_desc.GetValue().strip()
+            pcb_filename=filename,
+            layers=self.spin_layers.GetValue(),
+            description=self.txt_desc.GetValue().strip(),
         )
         
         self.EndModal(wx.ID_OK)
 
 
-class ConnectionEditorDialog(wx.Dialog):
-    """Dialog for managing inter-board connections."""
+class PortEditorDialog(wx.Dialog):
+    """Dialog to edit ports on a sub-board."""
     
-    def __init__(self, parent, project_mgr: ProjectManager):
-        super().__init__(parent, title="Inter-Board Connections", size=(800, 550))
+    def __init__(self, parent, board: SubBoardDefinition):
+        super().__init__(parent, title=f"Edit Ports - {board.name}", size=(600, 450))
         
-        self.project_mgr = project_mgr
+        self.board = board
+        self.ports = dict(board.ports)  # Work on copy
+        
         self.init_ui()
         self.refresh_list()
     
@@ -769,101 +645,280 @@ class ConnectionEditorDialog(wx.Dialog):
         panel = wx.Panel(self)
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         
-        # Info
         info = wx.StaticText(
             panel,
-            label="Define semantic connections between boards (like hierarchical labels).\n"
-                  "These don't represent physical traces - they show logical signal flow for ERC."
+            label="Define inter-board ports (connector pins that connect to other boards).\n"
+                  "These appear on the block diagram in the root PCB."
         )
         main_sizer.Add(info, 0, wx.ALL, 10)
         
-        # Connection list
-        self.list_ctrl = wx.ListCtrl(
-            panel,
-            style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SUNKEN
-        )
-        self.list_ctrl.InsertColumn(0, "Source Board", width=120)
-        self.list_ctrl.InsertColumn(1, "Source Port", width=100)
-        self.list_ctrl.InsertColumn(2, "→", width=30)
-        self.list_ctrl.InsertColumn(3, "Target Board", width=120)
-        self.list_ctrl.InsertColumn(4, "Target Port", width=100)
-        self.list_ctrl.InsertColumn(5, "Signal", width=100)
-        self.list_ctrl.InsertColumn(6, "Description", width=150)
-        
+        # Port list
+        self.list_ctrl = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.list_ctrl.InsertColumn(0, "Port Name", width=120)
+        self.list_ctrl.InsertColumn(1, "Direction", width=100)
+        self.list_ctrl.InsertColumn(2, "Net", width=120)
+        self.list_ctrl.InsertColumn(3, "Position", width=100)
         main_sizer.Add(self.list_ctrl, 1, wx.EXPAND | wx.ALL, 10)
         
         # Buttons
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_add = wx.Button(panel, label="Add Port")
+        self.btn_edit = wx.Button(panel, label="Edit")
+        self.btn_remove = wx.Button(panel, label="Remove")
         
-        self.btn_add = wx.Button(panel, label="Add Connection")
-        self.btn_remove = wx.Button(panel, label="Remove Connection")
-        self.btn_check = wx.Button(panel, label="Run Connectivity Check")
-        
-        self.btn_add.Bind(wx.EVT_BUTTON, self.on_add_connection)
-        self.btn_remove.Bind(wx.EVT_BUTTON, self.on_remove_connection)
-        self.btn_check.Bind(wx.EVT_BUTTON, self.on_run_check)
+        self.btn_add.Bind(wx.EVT_BUTTON, self.on_add)
+        self.btn_edit.Bind(wx.EVT_BUTTON, self.on_edit)
+        self.btn_remove.Bind(wx.EVT_BUTTON, self.on_remove)
         
         btn_sizer.Add(self.btn_add, 0, wx.ALL, 5)
+        btn_sizer.Add(self.btn_edit, 0, wx.ALL, 5)
         btn_sizer.Add(self.btn_remove, 0, wx.ALL, 5)
-        btn_sizer.AddStretchSpacer()
-        btn_sizer.Add(self.btn_check, 0, wx.ALL, 5)
+        main_sizer.Add(btn_sizer, 0, wx.ALL, 5)
         
-        main_sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 5)
-        
-        # Close button
-        btn_close = wx.Button(panel, wx.ID_CLOSE)
-        btn_close.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CLOSE))
-        main_sizer.Add(btn_close, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        # Dialog buttons
+        dialog_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        dialog_sizer.AddStretchSpacer()
+        btn_ok = wx.Button(panel, wx.ID_OK)
+        btn_cancel = wx.Button(panel, wx.ID_CANCEL)
+        btn_ok.Bind(wx.EVT_BUTTON, self.on_ok)
+        dialog_sizer.Add(btn_ok, 0, wx.ALL, 5)
+        dialog_sizer.Add(btn_cancel, 0, wx.ALL, 5)
+        main_sizer.Add(dialog_sizer, 0, wx.EXPAND | wx.ALL, 10)
         
         panel.SetSizer(main_sizer)
     
     def refresh_list(self):
         self.list_ctrl.DeleteAllItems()
-        for i, conn in enumerate(self.project_mgr.project.connections):
-            idx = self.list_ctrl.InsertItem(i, conn.source_board)
-            self.list_ctrl.SetItem(idx, 1, conn.source_port)
-            self.list_ctrl.SetItem(idx, 2, "→")
-            self.list_ctrl.SetItem(idx, 3, conn.target_board)
-            self.list_ctrl.SetItem(idx, 4, conn.target_port)
-            self.list_ctrl.SetItem(idx, 5, conn.signal_name)
-            self.list_ctrl.SetItem(idx, 6, conn.description)
+        for name, info in self.ports.items():
+            idx = self.list_ctrl.InsertItem(self.list_ctrl.GetItemCount(), name)
+            self.list_ctrl.SetItem(idx, 1, info.get('direction', 'bidir'))
+            self.list_ctrl.SetItem(idx, 2, info.get('net', ''))
+            pos = f"({info.get('x_offset', 0)}, {info.get('y_offset', 0)})"
+            self.list_ctrl.SetItem(idx, 3, pos)
     
-    def on_add_connection(self, event):
-        dlg = NewConnectionDialog(self, self.project_mgr)
-        if dlg.ShowModal() == wx.ID_OK and dlg.connection:
-            if self.project_mgr.add_connection(dlg.connection):
-                self.refresh_list()
-            else:
-                wx.MessageBox("Failed to add connection. Check that boards and ports exist.", 
-                              "Error", wx.OK | wx.ICON_ERROR)
+    def on_add(self, event):
+        dlg = SinglePortDialog(self, self.board)
+        if dlg.ShowModal() == wx.ID_OK:
+            self.ports[dlg.port_name] = dlg.port_info
+            self.refresh_list()
         dlg.Destroy()
     
-    def on_remove_connection(self, event):
+    def on_edit(self, event):
         idx = self.list_ctrl.GetFirstSelected()
         if idx < 0:
-            wx.MessageBox("Please select a connection to remove.", "No Selection", wx.OK | wx.ICON_WARNING)
             return
         
-        conn = self.project_mgr.project.connections[idx]
-        self.project_mgr.remove_connection(conn.id)
+        port_name = self.list_ctrl.GetItemText(idx)
+        port_info = self.ports.get(port_name, {})
+        
+        dlg = SinglePortDialog(self, self.board, port_name, port_info)
+        if dlg.ShowModal() == wx.ID_OK:
+            if dlg.port_name != port_name:
+                del self.ports[port_name]
+            self.ports[dlg.port_name] = dlg.port_info
+            self.refresh_list()
+        dlg.Destroy()
+    
+    def on_remove(self, event):
+        idx = self.list_ctrl.GetFirstSelected()
+        if idx < 0:
+            return
+        
+        port_name = self.list_ctrl.GetItemText(idx)
+        del self.ports[port_name]
         self.refresh_list()
     
-    def on_run_check(self, event):
-        results = self.project_mgr.run_connectivity_check()
+    def on_ok(self, event):
+        self.board.ports = self.ports
+        self.EndModal(wx.ID_OK)
+
+
+class SinglePortDialog(wx.Dialog):
+    """Dialog for adding/editing a single port."""
+    
+    def __init__(self, parent, board: SubBoardDefinition, 
+                 port_name: str = "", port_info: dict = None):
+        title = "Edit Port" if port_name else "Add Port"
+        super().__init__(parent, title=title, size=(400, 300))
         
-        if not results:
-            wx.MessageBox("✓ All ports are connected.\nNo errors or warnings.", 
-                          "Connectivity Check", wx.OK | wx.ICON_INFORMATION)
-        else:
-            msg = "Connectivity Check Results:\n\n" + "\n".join(results)
-            wx.MessageBox(msg, "Connectivity Check", wx.OK | wx.ICON_WARNING)
+        self.board = board
+        self.port_name = port_name
+        self.port_info = port_info or {}
+        
+        self.init_ui()
+    
+    def init_ui(self):
+        panel = wx.Panel(self)
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        grid = wx.FlexGridSizer(5, 2, 10, 10)
+        grid.AddGrowableCol(1, 1)
+        
+        # Port name
+        grid.Add(wx.StaticText(panel, label="Port Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.txt_name = wx.TextCtrl(panel, value=self.port_name)
+        grid.Add(self.txt_name, 1, wx.EXPAND)
+        
+        # Direction
+        grid.Add(wx.StaticText(panel, label="Direction:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.combo_dir = wx.ComboBox(panel, choices=["input", "output", "bidir"], style=wx.CB_READONLY)
+        self.combo_dir.SetValue(self.port_info.get('direction', 'bidir'))
+        grid.Add(self.combo_dir, 1, wx.EXPAND)
+        
+        # Net name
+        grid.Add(wx.StaticText(panel, label="Net Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.txt_net = wx.TextCtrl(panel, value=self.port_info.get('net', ''))
+        grid.Add(self.txt_net, 1, wx.EXPAND)
+        
+        # X offset (position on block)
+        grid.Add(wx.StaticText(panel, label="X Offset (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.spin_x = wx.SpinCtrlDouble(panel, min=-100, max=200, initial=self.port_info.get('x_offset', self.board.block_width))
+        grid.Add(self.spin_x, 0)
+        
+        # Y offset
+        grid.Add(wx.StaticText(panel, label="Y Offset (mm):"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.spin_y = wx.SpinCtrlDouble(panel, min=-100, max=200, initial=self.port_info.get('y_offset', self.board.block_height / 2))
+        grid.Add(self.spin_y, 0)
+        
+        main_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 20)
+        
+        # Position hint
+        hint = wx.StaticText(
+            panel,
+            label="Position: (0,0) = top-left of block.\n"
+                  f"Block size: {self.board.block_width} x {self.board.block_height} mm"
+        )
+        hint.SetForegroundColour(wx.Colour(100, 100, 100))
+        main_sizer.Add(hint, 0, wx.LEFT | wx.RIGHT, 20)
+        
+        main_sizer.AddStretchSpacer()
+        
+        # Buttons
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        btn_sizer.AddStretchSpacer()
+        btn_ok = wx.Button(panel, wx.ID_OK)
+        btn_cancel = wx.Button(panel, wx.ID_CANCEL)
+        btn_ok.Bind(wx.EVT_BUTTON, self.on_ok)
+        btn_sizer.Add(btn_ok, 0, wx.ALL, 5)
+        btn_sizer.Add(btn_cancel, 0, wx.ALL, 5)
+        main_sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 10)
+        
+        panel.SetSizer(main_sizer)
+    
+    def on_ok(self, event):
+        name = self.txt_name.GetValue().strip()
+        if not name:
+            wx.MessageBox("Please enter a port name.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+        
+        self.port_name = name
+        self.port_info = {
+            'direction': self.combo_dir.GetValue(),
+            'net': self.txt_net.GetValue().strip(),
+            'x_offset': self.spin_x.GetValue(),
+            'y_offset': self.spin_y.GetValue(),
+        }
+        
+        self.EndModal(wx.ID_OK)
+
+
+class ConnectionEditorDialog(wx.Dialog):
+    """Dialog to manage inter-board connections."""
+    
+    def __init__(self, parent, project_mgr: ProjectManager):
+        super().__init__(parent, title="Inter-Board Connections", size=(700, 500))
+        
+        self.project_mgr = project_mgr
+        self.connections = list(project_mgr.project.connections)
+        
+        self.init_ui()
+        self.refresh_list()
+    
+    def init_ui(self):
+        panel = wx.Panel(self)
+        main_sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        info = wx.StaticText(
+            panel,
+            label="Define semantic connections between board ports.\n"
+                  "These are drawn as lines in the root PCB block diagram."
+        )
+        main_sizer.Add(info, 0, wx.ALL, 10)
+        
+        # Connection list
+        self.list_ctrl = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.list_ctrl.InsertColumn(0, "From Board", width=120)
+        self.list_ctrl.InsertColumn(1, "From Port", width=100)
+        self.list_ctrl.InsertColumn(2, "→", width=30)
+        self.list_ctrl.InsertColumn(3, "To Board", width=120)
+        self.list_ctrl.InsertColumn(4, "To Port", width=100)
+        self.list_ctrl.InsertColumn(5, "Net", width=120)
+        main_sizer.Add(self.list_ctrl, 1, wx.EXPAND | wx.ALL, 10)
+        
+        # Buttons
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.btn_add = wx.Button(panel, label="Add Connection")
+        self.btn_remove = wx.Button(panel, label="Remove")
+        
+        self.btn_add.Bind(wx.EVT_BUTTON, self.on_add)
+        self.btn_remove.Bind(wx.EVT_BUTTON, self.on_remove)
+        
+        btn_sizer.Add(self.btn_add, 0, wx.ALL, 5)
+        btn_sizer.Add(self.btn_remove, 0, wx.ALL, 5)
+        main_sizer.Add(btn_sizer, 0, wx.ALL, 5)
+        
+        # Dialog buttons
+        dialog_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        dialog_sizer.AddStretchSpacer()
+        btn_ok = wx.Button(panel, wx.ID_OK)
+        btn_cancel = wx.Button(panel, wx.ID_CANCEL)
+        btn_ok.Bind(wx.EVT_BUTTON, self.on_ok)
+        dialog_sizer.Add(btn_ok, 0, wx.ALL, 5)
+        dialog_sizer.Add(btn_cancel, 0, wx.ALL, 5)
+        main_sizer.Add(dialog_sizer, 0, wx.EXPAND | wx.ALL, 10)
+        
+        panel.SetSizer(main_sizer)
+    
+    def refresh_list(self):
+        self.list_ctrl.DeleteAllItems()
+        for conn in self.connections:
+            idx = self.list_ctrl.InsertItem(self.list_ctrl.GetItemCount(), conn.from_board)
+            self.list_ctrl.SetItem(idx, 1, conn.from_port)
+            self.list_ctrl.SetItem(idx, 2, "→")
+            self.list_ctrl.SetItem(idx, 3, conn.to_board)
+            self.list_ctrl.SetItem(idx, 4, conn.to_port)
+            self.list_ctrl.SetItem(idx, 5, conn.net_name)
+    
+    def on_add(self, event):
+        boards = self.project_mgr.project.boards
+        if len(boards) < 2:
+            wx.MessageBox("Need at least 2 boards.", "Error", wx.OK | wx.ICON_WARNING)
+            return
+        
+        # Simple add dialog
+        dlg = NewConnectionDialog(self, self.project_mgr)
+        if dlg.ShowModal() == wx.ID_OK and dlg.connection:
+            self.connections.append(dlg.connection)
+            self.refresh_list()
+        dlg.Destroy()
+    
+    def on_remove(self, event):
+        idx = self.list_ctrl.GetFirstSelected()
+        if idx >= 0:
+            del self.connections[idx]
+            self.refresh_list()
+    
+    def on_ok(self, event):
+        self.project_mgr.project.connections = self.connections
+        self.project_mgr.save()
+        self.EndModal(wx.ID_OK)
 
 
 class NewConnectionDialog(wx.Dialog):
-    """Dialog for creating a new inter-board connection."""
+    """Dialog to add a new connection."""
     
     def __init__(self, parent, project_mgr: ProjectManager):
-        super().__init__(parent, title="New Inter-Board Connection", size=(500, 400))
+        super().__init__(parent, title="New Connection", size=(500, 350))
         
         self.project_mgr = project_mgr
         self.connection: Optional[InterBoardConnection] = None
@@ -874,324 +929,112 @@ class NewConnectionDialog(wx.Dialog):
         panel = wx.Panel(self)
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         
-        board_names = list(self.project_mgr.project.boards.keys())
+        boards = list(self.project_mgr.project.boards.keys())
         
-        # Source section
-        src_box = wx.StaticBox(panel, label="Source")
-        src_sizer = wx.StaticBoxSizer(src_box, wx.HORIZONTAL)
+        # From section
+        from_box = wx.StaticBox(panel, label="From")
+        from_sizer = wx.StaticBoxSizer(from_box, wx.HORIZONTAL)
         
-        src_sizer.Add(wx.StaticText(panel, label="Board:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
-        self.combo_src_board = wx.ComboBox(panel, choices=board_names, style=wx.CB_READONLY)
-        self.combo_src_board.Bind(wx.EVT_COMBOBOX, self.on_src_board_changed)
-        src_sizer.Add(self.combo_src_board, 1, wx.ALL, 5)
+        from_sizer.Add(wx.StaticText(panel, label="Board:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        self.from_board = wx.ComboBox(panel, choices=boards, style=wx.CB_READONLY)
+        self.from_board.Bind(wx.EVT_COMBOBOX, self.on_from_board_changed)
+        from_sizer.Add(self.from_board, 1, wx.ALL, 5)
         
-        src_sizer.Add(wx.StaticText(panel, label="Port:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
-        self.combo_src_port = wx.ComboBox(panel, choices=[], style=wx.CB_READONLY)
-        src_sizer.Add(self.combo_src_port, 1, wx.ALL, 5)
+        from_sizer.Add(wx.StaticText(panel, label="Port:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        self.from_port = wx.ComboBox(panel, choices=[], style=wx.CB_READONLY)
+        from_sizer.Add(self.from_port, 1, wx.ALL, 5)
         
-        main_sizer.Add(src_sizer, 0, wx.EXPAND | wx.ALL, 10)
+        main_sizer.Add(from_sizer, 0, wx.EXPAND | wx.ALL, 10)
         
-        # Arrow indicator
+        # Arrow
         arrow = wx.StaticText(panel, label="↓ connects to ↓")
         arrow.SetFont(wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
         main_sizer.Add(arrow, 0, wx.ALIGN_CENTER | wx.ALL, 5)
         
-        # Target section
-        tgt_box = wx.StaticBox(panel, label="Target")
-        tgt_sizer = wx.StaticBoxSizer(tgt_box, wx.HORIZONTAL)
+        # To section
+        to_box = wx.StaticBox(panel, label="To")
+        to_sizer = wx.StaticBoxSizer(to_box, wx.HORIZONTAL)
         
-        tgt_sizer.Add(wx.StaticText(panel, label="Board:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
-        self.combo_tgt_board = wx.ComboBox(panel, choices=board_names, style=wx.CB_READONLY)
-        self.combo_tgt_board.Bind(wx.EVT_COMBOBOX, self.on_tgt_board_changed)
-        tgt_sizer.Add(self.combo_tgt_board, 1, wx.ALL, 5)
+        to_sizer.Add(wx.StaticText(panel, label="Board:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        self.to_board = wx.ComboBox(panel, choices=boards, style=wx.CB_READONLY)
+        self.to_board.Bind(wx.EVT_COMBOBOX, self.on_to_board_changed)
+        to_sizer.Add(self.to_board, 1, wx.ALL, 5)
         
-        tgt_sizer.Add(wx.StaticText(panel, label="Port:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
-        self.combo_tgt_port = wx.ComboBox(panel, choices=[], style=wx.CB_READONLY)
-        tgt_sizer.Add(self.combo_tgt_port, 1, wx.ALL, 5)
+        to_sizer.Add(wx.StaticText(panel, label="Port:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        self.to_port = wx.ComboBox(panel, choices=[], style=wx.CB_READONLY)
+        to_sizer.Add(self.to_port, 1, wx.ALL, 5)
         
-        main_sizer.Add(tgt_sizer, 0, wx.EXPAND | wx.ALL, 10)
+        main_sizer.Add(to_sizer, 0, wx.EXPAND | wx.ALL, 10)
         
-        # Signal info
-        info_box = wx.StaticBox(panel, label="Signal Information")
-        info_sizer = wx.StaticBoxSizer(info_box, wx.VERTICAL)
+        # Net name
+        net_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        net_sizer.Add(wx.StaticText(panel, label="Net/Signal Name:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
+        self.txt_net = wx.TextCtrl(panel)
+        net_sizer.Add(self.txt_net, 1, wx.ALL, 5)
+        main_sizer.Add(net_sizer, 0, wx.EXPAND | wx.ALL, 10)
         
-        grid = wx.FlexGridSizer(2, 2, 5, 10)
-        grid.AddGrowableCol(1, 1)
+        main_sizer.AddStretchSpacer()
         
-        grid.Add(wx.StaticText(panel, label="Signal Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_signal = wx.TextCtrl(panel)
-        self.txt_signal.SetHint("e.g., UART_TX, SPI_CLK")
-        grid.Add(self.txt_signal, 1, wx.EXPAND)
-        
-        grid.Add(wx.StaticText(panel, label="Description:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_desc = wx.TextCtrl(panel)
-        grid.Add(self.txt_desc, 1, wx.EXPAND)
-        
-        info_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
-        main_sizer.Add(info_sizer, 0, wx.EXPAND | wx.ALL, 10)
-        
-        # Dialog buttons
-        btn_sizer = wx.StdDialogButtonSizer()
+        # Buttons
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        btn_sizer.AddStretchSpacer()
         btn_ok = wx.Button(panel, wx.ID_OK)
         btn_cancel = wx.Button(panel, wx.ID_CANCEL)
         btn_ok.Bind(wx.EVT_BUTTON, self.on_ok)
-        btn_sizer.AddButton(btn_ok)
-        btn_sizer.AddButton(btn_cancel)
-        btn_sizer.Realize()
-        
-        main_sizer.Add(btn_sizer, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
-        
-        panel.SetSizer(main_sizer)
-    
-    def on_src_board_changed(self, event):
-        board_name = self.combo_src_board.GetValue()
-        board = self.project_mgr.get_board(board_name)
-        if board:
-            port_names = [p.name for p in board.ports]
-            self.combo_src_port.Set(port_names)
-            if port_names:
-                self.combo_src_port.SetSelection(0)
-    
-    def on_tgt_board_changed(self, event):
-        board_name = self.combo_tgt_board.GetValue()
-        board = self.project_mgr.get_board(board_name)
-        if board:
-            port_names = [p.name for p in board.ports]
-            self.combo_tgt_port.Set(port_names)
-            if port_names:
-                self.combo_tgt_port.SetSelection(0)
-    
-    def on_ok(self, event):
-        src_board = self.combo_src_board.GetValue()
-        src_port = self.combo_src_port.GetValue()
-        tgt_board = self.combo_tgt_board.GetValue()
-        tgt_port = self.combo_tgt_port.GetValue()
-        
-        if not all([src_board, src_port, tgt_board, tgt_port]):
-            wx.MessageBox("Please select source and target board/port.", "Validation Error", wx.OK | wx.ICON_ERROR)
-            return
-        
-        self.connection = InterBoardConnection(
-            id=generate_connection_id(),
-            source_board=src_board,
-            source_port=src_port,
-            target_board=tgt_board,
-            target_port=tgt_port,
-            signal_name=self.txt_signal.GetValue().strip(),
-            description=self.txt_desc.GetValue().strip()
-        )
-        
-        self.EndModal(wx.ID_OK)
-
-
-class NewBoardDialog(wx.Dialog):
-    """Dialog for creating a new sub-PCB."""
-    
-    def __init__(self, parent, project_mgr: ProjectManager, edit_board: Optional[SubPCB] = None):
-        title = "Edit Sub-PCB" if edit_board else "New Sub-PCB"
-        super().__init__(parent, title=title, size=(500, 500))
-        
-        self.project_mgr = project_mgr
-        self.edit_board = edit_board
-        self.board: Optional[SubPCB] = None
-        
-        self.init_ui()
-        
-        if edit_board:
-            self.populate_from_board(edit_board)
-    
-    def init_ui(self):
-        panel = wx.Panel(self)
-        main_sizer = wx.BoxSizer(wx.VERTICAL)
-        
-        # Basic info
-        info_box = wx.StaticBox(panel, label="Board Information")
-        info_sizer = wx.StaticBoxSizer(info_box, wx.VERTICAL)
-        
-        grid = wx.FlexGridSizer(3, 2, 10, 10)
-        grid.AddGrowableCol(1, 1)
-        
-        grid.Add(wx.StaticText(panel, label="Board Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_name = wx.TextCtrl(panel)
-        self.txt_name.SetHint("e.g., MainBoard, PowerSupply, Interface")
-        grid.Add(self.txt_name, 1, wx.EXPAND)
-        
-        grid.Add(wx.StaticText(panel, label="PCB Filename:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        filename_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.txt_filename = wx.TextCtrl(panel)
-        self.btn_browse = wx.Button(panel, label="...", size=(30, -1))
-        self.btn_browse.Bind(wx.EVT_BUTTON, self.on_browse)
-        filename_sizer.Add(self.txt_filename, 1, wx.EXPAND)
-        filename_sizer.Add(self.btn_browse, 0, wx.LEFT, 5)
-        grid.Add(filename_sizer, 1, wx.EXPAND)
-        
-        grid.Add(wx.StaticText(panel, label="Description:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_desc = wx.TextCtrl(panel)
-        grid.Add(self.txt_desc, 1, wx.EXPAND)
-        
-        info_sizer.Add(grid, 0, wx.EXPAND | wx.ALL, 10)
-        main_sizer.Add(info_sizer, 0, wx.EXPAND | wx.ALL, 10)
-        
-        # Stackup
-        stackup_box = wx.StaticBox(panel, label="Stackup")
-        stackup_sizer = wx.StaticBoxSizer(stackup_box, wx.HORIZONTAL)
-        
-        stackup_sizer.Add(wx.StaticText(panel, label="Preset:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
-        self.combo_stackup = wx.ComboBox(
-            panel,
-            choices=list(STACKUP_PRESETS.keys()),
-            style=wx.CB_READONLY
-        )
-        self.combo_stackup.SetSelection(1)  # 4-Layer Standard
-        self.combo_stackup.Bind(wx.EVT_COMBOBOX, self.on_stackup_changed)
-        stackup_sizer.Add(self.combo_stackup, 1, wx.ALL, 5)
-        
-        stackup_sizer.Add(wx.StaticText(panel, label="Layers:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
-        self.spin_layers = wx.SpinCtrl(panel, min=1, max=32, initial=4)
-        stackup_sizer.Add(self.spin_layers, 0, wx.ALL, 5)
-        
-        main_sizer.Add(stackup_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
-        
-        # Design rules
-        rules_box = wx.StaticBox(panel, label="Design Rules")
-        rules_sizer = wx.StaticBoxSizer(rules_box, wx.HORIZONTAL)
-        
-        rules_sizer.Add(wx.StaticText(panel, label="Preset:"), 0, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 5)
-        self.combo_rules = wx.ComboBox(
-            panel,
-            choices=list(DESIGN_RULE_PRESETS.keys()),
-            style=wx.CB_READONLY
-        )
-        self.combo_rules.SetSelection(0)
-        rules_sizer.Add(self.combo_rules, 1, wx.ALL, 5)
-        
-        main_sizer.Add(rules_sizer, 0, wx.EXPAND | wx.ALL, 10)
-        
-        # Existing PCB checkbox
-        self.chk_existing = wx.CheckBox(panel, label="Use existing PCB file (don't create new)")
-        main_sizer.Add(self.chk_existing, 0, wx.ALL, 10)
-        
-        # Add spacer to push buttons to bottom
-        main_sizer.AddStretchSpacer()
-        
-        # Dialog buttons - using explicit buttons instead of StdDialogButtonSizer
-        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        btn_sizer.AddStretchSpacer()
-        
-        self.btn_ok = wx.Button(panel, wx.ID_OK, label="OK")
-        self.btn_cancel = wx.Button(panel, wx.ID_CANCEL, label="Cancel")
-        
-        self.btn_ok.Bind(wx.EVT_BUTTON, self.on_ok)
-        self.btn_cancel.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CANCEL))
-        
-        btn_sizer.Add(self.btn_ok, 0, wx.ALL, 5)
-        btn_sizer.Add(self.btn_cancel, 0, wx.ALL, 5)
-        
+        btn_sizer.Add(btn_ok, 0, wx.ALL, 5)
+        btn_sizer.Add(btn_cancel, 0, wx.ALL, 5)
         main_sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 10)
         
         panel.SetSizer(main_sizer)
-        
-        # Set OK as default button
-        self.btn_ok.SetDefault()
     
-    def populate_from_board(self, board: SubPCB):
-        self.txt_name.SetValue(board.name)
-        self.txt_name.Disable()
-        self.txt_filename.SetValue(board.pcb_filename)
-        self.txt_desc.SetValue(board.description)
-        self.spin_layers.SetValue(board.layers)
-        
-        # Match stackup preset
-        if board.stackup_preset in STACKUP_PRESETS:
-            idx = list(STACKUP_PRESETS.keys()).index(board.stackup_preset)
-            self.combo_stackup.SetSelection(idx)
-        
-        # Match rules preset
-        if board.design_rules_preset in DESIGN_RULE_PRESETS:
-            idx = list(DESIGN_RULE_PRESETS.keys()).index(board.design_rules_preset)
-            self.combo_rules.SetSelection(idx)
-        
-        self.chk_existing.SetValue(True)
-        self.chk_existing.Disable()
+    def on_from_board_changed(self, event):
+        board_name = self.from_board.GetValue()
+        board = self.project_mgr.project.boards.get(board_name)
+        if board:
+            self.from_port.Set(list(board.ports.keys()))
+            if board.ports:
+                self.from_port.SetSelection(0)
     
-    def on_browse(self, event):
-        dlg = wx.FileDialog(
-            self,
-            "Select/Save PCB File",
-            defaultDir=str(self.project_mgr.project_path),
-            wildcard="KiCad PCB files (*.kicad_pcb)|*.kicad_pcb",
-            style=wx.FD_SAVE
-        )
-        if dlg.ShowModal() == wx.ID_OK:
-            filepath = Path(dlg.GetPath())
-            try:
-                rel_path = filepath.relative_to(self.project_mgr.project_path)
-                self.txt_filename.SetValue(str(rel_path))
-            except ValueError:
-                self.txt_filename.SetValue(str(filepath))
-        dlg.Destroy()
-    
-    def on_stackup_changed(self, event):
-        preset_name = self.combo_stackup.GetValue()
-        if preset_name in STACKUP_PRESETS:
-            self.spin_layers.SetValue(STACKUP_PRESETS[preset_name]["layers"])
+    def on_to_board_changed(self, event):
+        board_name = self.to_board.GetValue()
+        board = self.project_mgr.project.boards.get(board_name)
+        if board:
+            self.to_port.Set(list(board.ports.keys()))
+            if board.ports:
+                self.to_port.SetSelection(0)
     
     def on_ok(self, event):
-        name = self.txt_name.GetValue().strip()
-        if not name:
-            wx.MessageBox("Please enter a board name.", "Validation Error", wx.OK | wx.ICON_ERROR)
+        if not all([self.from_board.GetValue(), self.from_port.GetValue(),
+                    self.to_board.GetValue(), self.to_port.GetValue()]):
+            wx.MessageBox("Please fill all fields.", "Error", wx.OK | wx.ICON_ERROR)
             return
         
-        if not self.edit_board and name in self.project_mgr.project.boards:
-            wx.MessageBox("A board with this name already exists.", "Validation Error", wx.OK | wx.ICON_ERROR)
-            return
-        
-        filename = self.txt_filename.GetValue().strip()
-        if not filename:
-            filename = f"{name}.kicad_pcb"
-        
-        self.board = SubPCB(
-            name=name,
-            pcb_filename=filename,
-            description=self.txt_desc.GetValue().strip(),
-            layers=self.spin_layers.GetValue(),
-            stackup_preset=self.combo_stackup.GetValue(),
-            design_rules_preset=self.combo_rules.GetValue()
+        import uuid
+        self.connection = InterBoardConnection(
+            id=str(uuid.uuid4())[:8],
+            from_board=self.from_board.GetValue(),
+            from_port=self.from_port.GetValue(),
+            to_board=self.to_board.GetValue(),
+            to_port=self.to_port.GetValue(),
+            net_name=self.txt_net.GetValue().strip()
         )
-        
-        # Copy ports from edit board if editing
-        if self.edit_board:
-            self.board.ports = self.edit_board.ports
-            self.board.created_date = self.edit_board.created_date
-        
-        # Create PCB file if needed
-        if not self.chk_existing.GetValue():
-            pcb_path = self.project_mgr.project_path / filename
-            if not pcb_path.exists():
-                if not create_empty_pcb(pcb_path, self.board.layers):
-                    wx.MessageBox(
-                        f"Warning: Could not create PCB file.\n"
-                        f"You may need to create it manually.",
-                        "Warning",
-                        wx.OK | wx.ICON_WARNING
-                    )
         
         self.EndModal(wx.ID_OK)
 
+
 class MainDialog(wx.Dialog):
-    """Main dialog for Multi-Board PCB Manager."""
+    """Main plugin dialog."""
     
     def __init__(self, parent, board: pcbnew.BOARD):
         super().__init__(
             parent,
-            title="Multi-Board PCB Manager",
-            size=(900, 650),
+            title="Multi-Board PCB Manager v4",
+            size=(850, 650),
             style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER
         )
         
         self.current_board = board
         
-        # Determine project path
         board_path = board.GetFileName()
         if board_path:
             self.project_path = Path(board_path).parent
@@ -1202,166 +1045,108 @@ class MainDialog(wx.Dialog):
         
         self.init_ui()
         self.bind_events()
-        self.refresh_board_list()
+        self.refresh_all()
     
     def init_ui(self):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         
         # Header
-        header_panel = wx.Panel(self)
-        header_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        header = wx.Panel(self)
+        header_sizer = wx.BoxSizer(wx.VERTICAL)
         
-        title = wx.StaticText(header_panel, label="Multi-Board Project")
-        title_font = title.GetFont()
-        title_font.SetPointSize(14)
-        title_font.SetWeight(wx.FONTWEIGHT_BOLD)
-        title.SetFont(title_font)
-        
+        title = wx.StaticText(header, label="Multi-Board PCB Manager")
+        font = title.GetFont()
+        font.SetPointSize(14)
+        font.SetWeight(wx.FONTWEIGHT_BOLD)
+        title.SetFont(font)
         header_sizer.Add(title, 0, wx.ALL, 10)
-        header_sizer.AddStretchSpacer()
-        header_sizer.Add(
-            wx.StaticText(header_panel, label=f"Project: {self.project_path.name}"),
-            0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10
-        )
         
-        header_panel.SetSizer(header_sizer)
-        main_sizer.Add(header_panel, 0, wx.EXPAND)
+        # Project info
+        info_grid = wx.FlexGridSizer(2, 2, 5, 20)
+        info_grid.Add(wx.StaticText(header, label="Root Schematic:"), 0)
+        self.lbl_root_sch = wx.StaticText(header, label=self.project_mgr.project.root_schematic or "(not found)")
+        info_grid.Add(self.lbl_root_sch, 0)
         
-        # Splitter for boards and info
-        splitter = wx.SplitterWindow(self, style=wx.SP_3D | wx.SP_LIVE_UPDATE)
+        info_grid.Add(wx.StaticText(header, label="Root PCB:"), 0)
+        self.lbl_root_pcb = wx.StaticText(header, label=self.project_mgr.project.root_pcb or "(not found)")
+        info_grid.Add(self.lbl_root_pcb, 0)
         
-        # Left panel - Board list
-        left_panel = wx.Panel(splitter)
-        left_sizer = wx.BoxSizer(wx.VERTICAL)
+        header_sizer.Add(info_grid, 0, wx.LEFT | wx.BOTTOM, 10)
         
-        left_sizer.Add(wx.StaticText(left_panel, label="Sub-PCBs (Boards)"), 0, wx.ALL, 5)
+        header.SetSizer(header_sizer)
+        main_sizer.Add(header, 0, wx.EXPAND)
         
-        self.board_list = wx.ListCtrl(
-            left_panel,
-            style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SUNKEN
-        )
-        self.board_list.InsertColumn(0, "Name", width=120)
-        self.board_list.InsertColumn(1, "Layers", width=50)
-        self.board_list.InsertColumn(2, "Ports", width=50)
-        self.board_list.InsertColumn(3, "PCB File", width=150)
+        # Sub-boards list
+        list_label = wx.StaticText(self, label="Sub-Board PCBs:")
+        main_sizer.Add(list_label, 0, wx.LEFT | wx.TOP, 10)
         
-        left_sizer.Add(self.board_list, 1, wx.EXPAND | wx.ALL, 5)
+        self.board_list = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.board_list.InsertColumn(0, "Board Name", width=150)
+        self.board_list.InsertColumn(1, "PCB File", width=200)
+        self.board_list.InsertColumn(2, "Layers", width=60)
+        self.board_list.InsertColumn(3, "Ports", width=60)
+        self.board_list.InsertColumn(4, "Description", width=200)
+        main_sizer.Add(self.board_list, 1, wx.EXPAND | wx.ALL, 10)
         
         # Board buttons
         board_btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_add_board = wx.Button(left_panel, label="Add Board")
-        self.btn_edit_board = wx.Button(left_panel, label="Edit")
-        self.btn_remove_board = wx.Button(left_panel, label="Remove")
         
-        board_btn_sizer.Add(self.btn_add_board, 0, wx.ALL, 2)
-        board_btn_sizer.Add(self.btn_edit_board, 0, wx.ALL, 2)
-        board_btn_sizer.Add(self.btn_remove_board, 0, wx.ALL, 2)
+        self.btn_new = wx.Button(self, label="New Sub-Board")
+        self.btn_edit_ports = wx.Button(self, label="Edit Ports")
+        self.btn_remove = wx.Button(self, label="Remove")
+        self.btn_open = wx.Button(self, label="Open PCB")
         
-        left_sizer.Add(board_btn_sizer, 0, wx.ALL, 5)
+        board_btn_sizer.Add(self.btn_new, 0, wx.ALL, 3)
+        board_btn_sizer.Add(self.btn_edit_ports, 0, wx.ALL, 3)
+        board_btn_sizer.Add(self.btn_remove, 0, wx.ALL, 3)
+        board_btn_sizer.AddStretchSpacer()
+        board_btn_sizer.Add(self.btn_open, 0, wx.ALL, 3)
         
-        # More board actions
-        action_btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_edit_ports = wx.Button(left_panel, label="Edit Ports")
-        self.btn_open_pcb = wx.Button(left_panel, label="Open PCB")
+        main_sizer.Add(board_btn_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
         
-        action_btn_sizer.Add(self.btn_edit_ports, 0, wx.ALL, 2)
-        action_btn_sizer.Add(self.btn_open_pcb, 0, wx.ALL, 2)
+        # Connection and diagram section
+        conn_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
-        left_sizer.Add(action_btn_sizer, 0, wx.ALL, 5)
+        self.btn_connections = wx.Button(self, label="Edit Inter-Board Connections")
+        self.btn_update_diagram = wx.Button(self, label="Update Block Diagram in Root PCB")
+        self.btn_cleanup = wx.Button(self, label="Cleanup Auto-Projects")
         
-        left_panel.SetSizer(left_sizer)
+        conn_sizer.Add(self.btn_connections, 0, wx.ALL, 5)
+        conn_sizer.Add(self.btn_update_diagram, 0, wx.ALL, 5)
+        conn_sizer.AddStretchSpacer()
+        conn_sizer.Add(self.btn_cleanup, 0, wx.ALL, 5)
         
-        # Right panel - Connections and info
-        right_panel = wx.Panel(splitter)
-        right_sizer = wx.BoxSizer(wx.VERTICAL)
-        
-        right_sizer.Add(wx.StaticText(right_panel, label="Inter-Board Connections"), 0, wx.ALL, 5)
-        
-        self.conn_list = wx.ListCtrl(
-            right_panel,
-            style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SUNKEN
-        )
-        self.conn_list.InsertColumn(0, "From", width=150)
-        self.conn_list.InsertColumn(1, "→", width=30)
-        self.conn_list.InsertColumn(2, "To", width=150)
-        self.conn_list.InsertColumn(3, "Signal", width=100)
-        
-        right_sizer.Add(self.conn_list, 1, wx.EXPAND | wx.ALL, 5)
-        
-        # Connection buttons
-        conn_btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_add_conn = wx.Button(right_panel, label="Add Connection")
-        self.btn_remove_conn = wx.Button(right_panel, label="Remove")
-        self.btn_manage_conn = wx.Button(right_panel, label="Manage All...")
-        
-        conn_btn_sizer.Add(self.btn_add_conn, 0, wx.ALL, 2)
-        conn_btn_sizer.Add(self.btn_remove_conn, 0, wx.ALL, 2)
-        conn_btn_sizer.Add(self.btn_manage_conn, 0, wx.ALL, 2)
-        
-        right_sizer.Add(conn_btn_sizer, 0, wx.ALL, 5)
-        
-        right_panel.SetSizer(right_sizer)
-        
-        splitter.SplitVertically(left_panel, right_panel)
-        splitter.SetMinimumPaneSize(300)
-        splitter.SetSashPosition(400)
-        
-        main_sizer.Add(splitter, 1, wx.EXPAND | wx.ALL, 5)
+        main_sizer.Add(conn_sizer, 0, wx.EXPAND | wx.ALL, 5)
         
         # Bottom buttons
         bottom_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        
-        self.btn_check = wx.Button(self, label="Run Connectivity Check")
-        self.btn_export = wx.Button(self, label="Export Report")
-        btn_close = wx.Button(self, wx.ID_CLOSE)
-        
-        bottom_sizer.Add(self.btn_check, 0, wx.ALL, 5)
-        bottom_sizer.Add(self.btn_export, 0, wx.ALL, 5)
         bottom_sizer.AddStretchSpacer()
-        bottom_sizer.Add(btn_close, 0, wx.ALL, 5)
+        btn_close = wx.Button(self, wx.ID_CLOSE)
+        bottom_sizer.Add(btn_close, 0, wx.ALL, 10)
         
-        main_sizer.Add(bottom_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        main_sizer.Add(bottom_sizer, 0, wx.EXPAND)
         
         self.SetSizer(main_sizer)
     
     def bind_events(self):
-        # Board events
-        self.btn_add_board.Bind(wx.EVT_BUTTON, self.on_add_board)
-        self.btn_edit_board.Bind(wx.EVT_BUTTON, self.on_edit_board)
-        self.btn_remove_board.Bind(wx.EVT_BUTTON, self.on_remove_board)
+        self.btn_new.Bind(wx.EVT_BUTTON, self.on_new_board)
         self.btn_edit_ports.Bind(wx.EVT_BUTTON, self.on_edit_ports)
-        self.btn_open_pcb.Bind(wx.EVT_BUTTON, self.on_open_pcb)
-        
-        # Connection events
-        self.btn_add_conn.Bind(wx.EVT_BUTTON, self.on_add_connection)
-        self.btn_remove_conn.Bind(wx.EVT_BUTTON, self.on_remove_connection)
-        self.btn_manage_conn.Bind(wx.EVT_BUTTON, self.on_manage_connections)
-        
-        # Other events
-        self.btn_check.Bind(wx.EVT_BUTTON, self.on_run_check)
-        self.btn_export.Bind(wx.EVT_BUTTON, self.on_export_report)
-        self.Bind(wx.EVT_BUTTON, self.on_close, id=wx.ID_CLOSE)
+        self.btn_remove.Bind(wx.EVT_BUTTON, self.on_remove_board)
+        self.btn_open.Bind(wx.EVT_BUTTON, self.on_open_pcb)
+        self.btn_connections.Bind(wx.EVT_BUTTON, self.on_connections)
+        self.btn_update_diagram.Bind(wx.EVT_BUTTON, self.on_update_diagram)
+        self.btn_cleanup.Bind(wx.EVT_BUTTON, self.on_cleanup)
+        self.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CLOSE), id=wx.ID_CLOSE)
     
-    def refresh_board_list(self):
+    def refresh_all(self):
         self.board_list.DeleteAllItems()
-        for i, (name, board) in enumerate(self.project_mgr.project.boards.items()):
-            idx = self.board_list.InsertItem(i, name)
-            self.board_list.SetItem(idx, 1, str(board.layers))
-            self.board_list.SetItem(idx, 2, str(len(board.ports)))
-            self.board_list.SetItem(idx, 3, board.pcb_filename)
         
-        self.refresh_connection_list()
-    
-    def refresh_connection_list(self):
-        self.conn_list.DeleteAllItems()
-        for i, conn in enumerate(self.project_mgr.project.connections):
-            from_str = f"{conn.source_board}.{conn.source_port}"
-            to_str = f"{conn.target_board}.{conn.target_port}"
-            
-            idx = self.conn_list.InsertItem(i, from_str)
-            self.conn_list.SetItem(idx, 1, "→")
-            self.conn_list.SetItem(idx, 2, to_str)
-            self.conn_list.SetItem(idx, 3, conn.signal_name)
+        for name, board in self.project_mgr.project.boards.items():
+            idx = self.board_list.InsertItem(self.board_list.GetItemCount(), name)
+            self.board_list.SetItem(idx, 1, board.pcb_filename)
+            self.board_list.SetItem(idx, 2, str(board.layers))
+            self.board_list.SetItem(idx, 3, str(len(board.ports)))
+            self.board_list.SetItem(idx, 4, board.description)
     
     def get_selected_board(self) -> Optional[str]:
         idx = self.board_list.GetFirstSelected()
@@ -1369,72 +1154,52 @@ class MainDialog(wx.Dialog):
             return self.board_list.GetItemText(idx)
         return None
     
-    def on_add_board(self, event):
-        dlg = NewBoardDialog(self, self.project_mgr)
+    def on_new_board(self, event):
+        dlg = NewSubBoardDialog(self, self.project_mgr)
         if dlg.ShowModal() == wx.ID_OK and dlg.board:
-            self.project_mgr.add_board(dlg.board)
-            self.refresh_board_list()
+            success, msg = self.project_mgr.create_sub_board(dlg.board)
+            if success:
+                wx.MessageBox(msg, "Success", wx.OK | wx.ICON_INFORMATION)
+                self.refresh_all()
+            else:
+                wx.MessageBox(msg, "Error", wx.OK | wx.ICON_ERROR)
         dlg.Destroy()
     
-    def on_edit_board(self, event):
+    def on_edit_ports(self, event):
         name = self.get_selected_board()
         if not name:
-            wx.MessageBox("Please select a board to edit.", "No Selection", wx.OK | wx.ICON_WARNING)
+            wx.MessageBox("Please select a board.", "No Selection", wx.OK | wx.ICON_WARNING)
             return
         
-        board = self.project_mgr.get_board(name)
+        board = self.project_mgr.project.boards.get(name)
         if board:
-            dlg = NewBoardDialog(self, self.project_mgr, edit_board=board)
-            if dlg.ShowModal() == wx.ID_OK and dlg.board:
-                # Update board properties
-                board.description = dlg.board.description
-                board.pcb_filename = dlg.board.pcb_filename
-                board.layers = dlg.board.layers
-                board.stackup_preset = dlg.board.stackup_preset
-                board.design_rules_preset = dlg.board.design_rules_preset
-                board.modified_date = datetime.now().isoformat()
+            dlg = PortEditorDialog(self, board)
+            if dlg.ShowModal() == wx.ID_OK:
                 self.project_mgr.save()
-                self.refresh_board_list()
+                self.refresh_all()
             dlg.Destroy()
     
     def on_remove_board(self, event):
         name = self.get_selected_board()
         if not name:
-            wx.MessageBox("Please select a board to remove.", "No Selection", wx.OK | wx.ICON_WARNING)
+            wx.MessageBox("Please select a board.", "No Selection", wx.OK | wx.ICON_WARNING)
             return
         
         if wx.MessageBox(
-            f"Remove board '{name}'?\n"
-            "This will also remove all connections involving this board.\n"
-            "(PCB file will NOT be deleted)",
-            "Confirm Remove",
+            f"Remove '{name}' from project?\n\n"
+            "Note: PCB and schematic link files will NOT be deleted.",
+            "Confirm",
             wx.YES_NO | wx.ICON_QUESTION
         ) == wx.YES:
-            self.project_mgr.remove_board(name)
-            self.refresh_board_list()
-    
-    def on_edit_ports(self, event):
-        name = self.get_selected_board()
-        if not name:
-            wx.MessageBox("Please select a board to edit ports.", "No Selection", wx.OK | wx.ICON_WARNING)
-            return
-        
-        board = self.project_mgr.get_board(name)
-        if board:
-            # Try to load the board's PCB file for net info
-            pcb_board = None
-            pcb_path = self.project_mgr.project_path / board.pcb_filename
-            if pcb_path.exists():
-                try:
-                    pcb_board = pcbnew.LoadBoard(str(pcb_path))
-                except:
-                    pass
+            # Remove connections involving this board
+            self.project_mgr.project.connections = [
+                c for c in self.project_mgr.project.connections
+                if c.from_board != name and c.to_board != name
+            ]
             
-            dlg = PortEditorDialog(self, board, pcb_board)
-            if dlg.ShowModal() == wx.ID_OK:
-                self.project_mgr.save()
-                self.refresh_board_list()
-            dlg.Destroy()
+            del self.project_mgr.project.boards[name]
+            self.project_mgr.save()
+            self.refresh_all()
     
     def on_open_pcb(self, event):
         name = self.get_selected_board()
@@ -1442,204 +1207,62 @@ class MainDialog(wx.Dialog):
             wx.MessageBox("Please select a board.", "No Selection", wx.OK | wx.ICON_WARNING)
             return
         
-        board = self.project_mgr.get_board(name)
+        board = self.project_mgr.project.boards.get(name)
         if not board:
             return
         
         pcb_path = self.project_mgr.project_path / board.pcb_filename
+        
         if not pcb_path.exists():
-            wx.MessageBox(
-                f"PCB file not found: {pcb_path}",
-                "File Not Found",
-                wx.OK | wx.ICON_WARNING
-            )
+            wx.MessageBox(f"PCB file not found: {board.pcb_filename}", "Error", wx.OK | wx.ICON_ERROR)
             return
         
         import subprocess
         try:
             subprocess.Popen(["pcbnew", str(pcb_path)])
-        except FileNotFoundError:
-            wx.MessageBox(
-                f"Could not launch pcbnew.\nPlease open manually:\n{pcb_path}",
-                "Launch Error",
-                wx.OK | wx.ICON_ERROR
-            )
+        except Exception as e:
+            wx.MessageBox(f"Failed to open pcbnew: {e}", "Error", wx.OK | wx.ICON_ERROR)
     
-    def on_add_connection(self, event):
-        if len(self.project_mgr.project.boards) < 2:
-            wx.MessageBox(
-                "Need at least 2 boards to create a connection.",
-                "Not Enough Boards",
-                wx.OK | wx.ICON_WARNING
-            )
-            return
-        
-        # Check if any boards have ports
-        has_ports = any(len(b.ports) > 0 for b in self.project_mgr.project.boards.values())
-        if not has_ports:
-            wx.MessageBox(
-                "No ports defined on any board.\n"
-                "Please add ports to your boards first using 'Edit Ports'.",
-                "No Ports",
-                wx.OK | wx.ICON_WARNING
-            )
-            return
-        
-        dlg = NewConnectionDialog(self, self.project_mgr)
-        if dlg.ShowModal() == wx.ID_OK and dlg.connection:
-            if self.project_mgr.add_connection(dlg.connection):
-                self.refresh_connection_list()
-            else:
-                wx.MessageBox("Failed to add connection.", "Error", wx.OK | wx.ICON_ERROR)
-        dlg.Destroy()
-    
-    def on_remove_connection(self, event):
-        idx = self.conn_list.GetFirstSelected()
-        if idx < 0:
-            wx.MessageBox("Please select a connection to remove.", "No Selection", wx.OK | wx.ICON_WARNING)
-            return
-        
-        conn = self.project_mgr.project.connections[idx]
-        self.project_mgr.remove_connection(conn.id)
-        self.refresh_connection_list()
-    
-    def on_manage_connections(self, event):
+    def on_connections(self, event):
         dlg = ConnectionEditorDialog(self, self.project_mgr)
         dlg.ShowModal()
         dlg.Destroy()
-        self.refresh_connection_list()
     
-    def on_run_check(self, event):
-        results = self.project_mgr.run_connectivity_check()
-        
-        if not results:
+    def on_update_diagram(self, event):
+        success, msg = self.project_mgr.update_root_pcb_block_diagram()
+        if success:
             wx.MessageBox(
-                "✓ Connectivity Check Passed\n\n"
-                "All ports are connected with correct directions.",
-                "Connectivity Check",
+                f"Block diagram updated!\n\n{msg}\n\n"
+                "View User.1 layer in the root PCB to see the diagram.",
+                "Success",
                 wx.OK | wx.ICON_INFORMATION
             )
         else:
-            errors = [r for r in results if r.startswith("ERROR")]
-            warnings = [r for r in results if r.startswith("WARNING")]
-            
-            msg = "Connectivity Check Results\n"
-            msg += "=" * 40 + "\n\n"
-            
-            if errors:
-                msg += f"ERRORS ({len(errors)}):\n"
-                for e in errors:
-                    msg += f"  {e}\n"
-                msg += "\n"
-            
-            if warnings:
-                msg += f"WARNINGS ({len(warnings)}):\n"
-                for w in warnings:
-                    msg += f"  {w}\n"
-            
-            wx.MessageBox(msg, "Connectivity Check", wx.OK | wx.ICON_WARNING)
+            wx.MessageBox(msg, "Error", wx.OK | wx.ICON_ERROR)
     
-    def on_export_report(self, event):
-        """Export a text report of the multi-board project."""
-        report = []
-        report.append("=" * 60)
-        report.append("MULTI-BOARD PROJECT REPORT")
-        report.append("=" * 60)
-        report.append(f"Project: {self.project_mgr.project.name}")
-        report.append(f"Path: {self.project_mgr.project_path}")
-        report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        report.append("")
-        
-        # Boards section
-        report.append("-" * 60)
-        report.append("BOARDS")
-        report.append("-" * 60)
-        
-        for name, board in self.project_mgr.project.boards.items():
-            report.append(f"\n[{name}]")
-            report.append(f"  PCB File: {board.pcb_filename}")
-            report.append(f"  Layers: {board.layers}")
-            report.append(f"  Stackup: {board.stackup_preset}")
-            report.append(f"  Design Rules: {board.design_rules_preset}")
-            report.append(f"  Description: {board.description}")
-            
-            if board.ports:
-                report.append(f"  Ports ({len(board.ports)}):")
-                for port in board.ports:
-                    report.append(f"    - {port.name} [{port.direction}] -> {port.net_name}")
-        
-        report.append("")
-        
-        # Connections section
-        report.append("-" * 60)
-        report.append("INTER-BOARD CONNECTIONS")
-        report.append("-" * 60)
-        
-        if self.project_mgr.project.connections:
-            for conn in self.project_mgr.project.connections:
-                report.append(f"\n{conn.source_board}.{conn.source_port}")
-                report.append(f"  -> {conn.target_board}.{conn.target_port}")
-                if conn.signal_name:
-                    report.append(f"  Signal: {conn.signal_name}")
+    def on_cleanup(self, event):
+        cleaned = self.project_mgr.cleanup_auto_projects()
+        if cleaned:
+            wx.MessageBox(
+                f"Removed {len(cleaned)} auto-created project files:\n\n" + "\n".join(cleaned),
+                "Cleanup Complete",
+                wx.OK | wx.ICON_INFORMATION
+            )
         else:
-            report.append("\nNo connections defined.")
-        
-        report.append("")
-        
-        # Connectivity check
-        report.append("-" * 60)
-        report.append("CONNECTIVITY CHECK")
-        report.append("-" * 60)
-        
-        results = self.project_mgr.run_connectivity_check()
-        if results:
-            for r in results:
-                report.append(f"  {r}")
-        else:
-            report.append("  ✓ All checks passed")
-        
-        report.append("")
-        report.append("=" * 60)
-        
-        # Save report
-        dlg = wx.FileDialog(
-            self,
-            "Save Report",
-            defaultDir=str(self.project_mgr.project_path),
-            defaultFile="multiboard_report.txt",
-            wildcard="Text files (*.txt)|*.txt",
-            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT
-        )
-        
-        if dlg.ShowModal() == wx.ID_OK:
-            filepath = dlg.GetPath()
-            try:
-                with open(filepath, 'w') as f:
-                    f.write("\n".join(report))
-                wx.MessageBox(f"Report saved to:\n{filepath}", "Export Complete", wx.OK | wx.ICON_INFORMATION)
-            except IOError as e:
-                wx.MessageBox(f"Error saving report: {e}", "Error", wx.OK | wx.ICON_ERROR)
-        
-        dlg.Destroy()
-    
-    def on_close(self, event):
-        self.project_mgr.save()
-        self.EndModal(wx.ID_CLOSE)
+            wx.MessageBox("No auto-created project files found.", "Cleanup", wx.OK | wx.ICON_INFORMATION)
 
 
 # ============================================================================
-# KiCad Plugin Registration
+# Plugin Registration
 # ============================================================================
 
 class MultiBoardPlugin(pcbnew.ActionPlugin):
-    """KiCad Action Plugin for Multi-Board Management."""
-    
     def defaults(self):
         self.name = "Multi-Board Manager"
         self.category = "Project Management"
         self.description = (
-            "Hierarchical multi-board PCB management with inter-board connections. "
-            "Define INPUT/OUTPUT ports on each board and connect them semantically."
+            "Hierarchical PCB management - like schematic sheets but for PCBs. "
+            "Create sub-board PCBs that use the same root schematic."
         )
         self.show_toolbar_button = True
         self.icon_file_name = os.path.join(os.path.dirname(__file__), "icon.png")
@@ -1647,12 +1270,7 @@ class MultiBoardPlugin(pcbnew.ActionPlugin):
     def Run(self):
         board = pcbnew.GetBoard()
         if not board:
-            wx.MessageBox(
-                "No board is currently open.\n"
-                "Please open a PCB file first.",
-                "No Board",
-                wx.OK | wx.ICON_ERROR
-            )
+            wx.MessageBox("Please open a PCB file first.", "No Board", wx.OK | wx.ICON_ERROR)
             return
         
         dlg = MainDialog(None, board)
@@ -1660,5 +1278,34 @@ class MultiBoardPlugin(pcbnew.ActionPlugin):
         dlg.Destroy()
 
 
-# Register the plugin
 MultiBoardPlugin().register()
+
+# ```
+
+# ## Key Features of v4
+
+# **1. NO new KiCad projects created**
+# - Only creates `.kicad_pcb` files
+# - Creates schematic **symlinks** (e.g., `main_board.kicad_sch` → `SWIFT_board.kicad_sch`)
+# - This makes "Update PCB from Schematic" work with your root schematic
+
+# **2. Cleanup button**
+# - If KiCad auto-creates `.kicad_pro` files when you open a sub-PCB, click "Cleanup Auto-Projects" to delete them
+
+# **3. Block diagram in root PCB**
+# - Click "Update Block Diagram in Root PCB"
+# - Draws board rectangles and connection lines on **User.1 layer**
+# - Define ports on each board (position on edges)
+# - Draw connections between ports
+
+# **4. Workflow**:
+# ```
+# 1. Open root PCB (SWIFT_board.kicad_pcb)
+# 2. Open Multi-Board Manager
+# 3. Click "New Sub-Board" → creates power_board.kicad_pcb + symlink
+# 4. Add ports to each board (Edit Ports)
+# 5. Add inter-board connections
+# 6. Click "Update Block Diagram" → draws diagram on User.1
+# 7. Open sub-PCB → "Update from Schematic" → pulls from root schematic
+# 8. Delete components you don't need on that board
+# 9. Generate Gerbers independently for each PCB
