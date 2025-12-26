@@ -40,6 +40,9 @@ BOARD_BLOCK_PREFIX = "BoardBlock_"
 PORT_PAD_SIZE = 1.0  # mm
 BLOCK_LINE_WIDTH = 0.3  # mm
 
+# Netlist export format: plugin parses legacy XML
+NETLIST_EXPORT_FORMAT = "kicadxml"
+
 
 # ============================================================================
 # Data Models
@@ -144,12 +147,82 @@ class ProjectManager:
         self.project_path = project_path
         self.config_file = project_path / self.CONFIG_FILENAME
         self.footprint_lib_path = project_path / f"{FOOTPRINT_LIB_NAME}.pretty"
-
         self.project = MultiBoardProject()
         
         self._detect_root_files()
         self.load()
     
+
+    def _kicad_cli_exe(self) -> Optional[str]:
+        """Locate kicad-cli in PATH or common KiCad install env vars (Windows)."""
+        exe = shutil.which("kicad-cli")
+        if exe:
+            return exe
+
+        if os.name == "nt":
+            for env in ("KICAD_INSTALL_PATH", "KICAD9_INSTALL_PATH", "KICAD8_INSTALL_PATH", "KICAD7_INSTALL_PATH"):
+                base = os.environ.get(env)
+                if not base:
+                    continue
+                cand = Path(base) / "bin" / "kicad-cli.exe"
+                if cand.exists():
+                    return str(cand)
+
+        return None
+
+    def _run_kicad_cli(self, args: List[str]) -> Tuple[int, str]:
+        """Run kicad-cli and return (returncode, combined_output)."""
+        exe = self._kicad_cli_exe()
+        if not exe:
+            return 127, "kicad-cli not found (not in PATH)"
+        try:
+            p = subprocess.run([exe] + args, capture_output=True, text=True, cwd=str(self.project_path))
+            out = (p.stdout or "") + ("\n" if p.stdout and p.stderr else "") + (p.stderr or "")
+            return p.returncode, (out or "").strip()
+        except Exception as e:
+            return 126, str(e)
+
+    def _ensure_board_miniproject(self, board_pcb_path: Path) -> Tuple[bool, str]:
+        """Option B: create a per-board mini-project so KiCad doesn't auto-generate files.
+
+        Strategy:
+          - create <stem>.kicad_pro (minimal JSON), <stem>.kicad_prl (minimal JSON)
+          - create <stem>.kicad_sch as a hardlink to root schematic (fallback: copy)
+        """
+        stem = board_pcb_path.stem
+        pro_path = board_pcb_path.with_suffix(".kicad_pro")
+        prl_path = board_pcb_path.with_suffix(".kicad_prl")
+        sch_link_path = board_pcb_path.with_suffix(".kicad_sch")
+
+        # root schematic must exist
+        if not self.project.root_schematic:
+            return False, "Root schematic not detected (.kicad_sch not found next to root .kicad_pro)"
+        root_sch_path = self.project_path / self.project.root_schematic
+        if not root_sch_path.exists():
+            return False, f"Root schematic missing: {root_sch_path.name}"
+
+        # 1) schematic link/copy
+        try:
+            if not sch_link_path.exists():
+                try:
+                    os.link(str(root_sch_path), str(sch_link_path))  # NTFS hardlink
+                except Exception:
+                    shutil.copy2(str(root_sch_path), str(sch_link_path))
+        except Exception as e:
+            return False, f"Failed to create per-board schematic link/copy: {e}"
+
+        # 2) minimal project files (KiCad will happily overwrite/extend these)
+        try:
+            if not pro_path.exists():
+                minimal = {"meta": {"version": 1}, "project": {"title": stem}}
+                pro_path.write_text(json.dumps(minimal, indent=2), encoding="utf-8")
+            if not prl_path.exists():
+                prl_path.write_text("{}", encoding="utf-8")
+        except Exception as e:
+            return False, f"Failed to create per-board project files: {e}"
+
+        return True, "OK"
+
     def _detect_root_files(self):
         """Find the main .kicad_pro and associated files."""
         for f in self.project_path.glob("*.kicad_pro"):
@@ -368,6 +441,11 @@ class ProjectManager:
         if not success:
             return False, "Failed to write PCB file"
         
+        # Option B: create a per-board mini-project (prevents KiCad auto-generating .kicad_pro)
+        ok, detail = self._ensure_board_miniproject(pcb_path)
+        if not ok:
+            return False, detail
+
         return True, f"Created {board.pcb_filename}"
     
     def _write_empty_pcb(self, filepath: Path, layer_count: int) -> bool:
@@ -499,16 +577,14 @@ class ProjectManager:
         sch_path = self.project_path / self.project.root_schematic
         
         try:
-            result = subprocess.run(
-                ["kicad-cli", "sch", "export", "netlist",
-                 "-o", str(netlist_path),
-                 str(sch_path)],
-                capture_output=True,
-                text=True,
-                cwd=str(self.project_path)
-            )
-            
-            if result.returncode == 0 and netlist_path.exists():
+            rc, out = self._run_kicad_cli([
+                "sch", "export", "netlist",
+                "--format", NETLIST_EXPORT_FORMAT,
+                "-o", str(netlist_path),
+                str(sch_path),
+            ])
+
+            if rc == 0 and netlist_path.exists():
                 components = self._parse_netlist_components(netlist_path)
                 netlist_path.unlink()  # Clean up
         except FileNotFoundError:
@@ -571,30 +647,16 @@ class ProjectManager:
         
         try:
             # Generate full netlist
-            result = subprocess.run(
-                ["kicad-cli", "sch", "export", "netlist",
-                 "-o", str(temp_netlist),
-                 str(sch_path)],
-                capture_output=True,
-                text=True,
-                cwd=str(self.project_path)
-            )
+            rc, out = self._run_kicad_cli(["sch","export","netlist","--format",NETLIST_EXPORT_FORMAT,"-o", str(temp_netlist), str(sch_path)])
             
-            if result.returncode != 0:
-                return False, f"Failed to generate netlist: {result.stderr}"
+            if rc != 0:
+                return False, f"Failed to generate netlist: {out}"
             
             # 4. Filter the netlist (remove excluded components)
             filtered_netlist = self._filter_netlist(temp_netlist, exclude_refs)
             
             # 5. Use kicad-cli to update PCB
-            result = subprocess.run(
-                ["kicad-cli", "pcb", "import", "netlist",
-                 "-i", str(filtered_netlist),
-                 str(pcb_path)],
-                capture_output=True,
-                text=True,
-                cwd=str(self.project_path)
-            )
+            ok, detail = self._apply_kicadxml_netlist_to_pcb(pcb_path, filtered_netlist)
             
             # Clean up temp files
             if temp_netlist.exists():
@@ -602,7 +664,7 @@ class ProjectManager:
             if filtered_netlist.exists():
                 filtered_netlist.unlink()
             
-            if result.returncode != 0:
+            if rc != 0:
                 return False, f"Failed to import netlist: {result.stderr}"
             
             # 6. Update placement tracking
@@ -615,6 +677,98 @@ class ProjectManager:
         except Exception as e:
             return False, f"Error: {str(e)}"
     
+
+    def _apply_kicadxml_netlist_to_pcb(self, pcb_path: Path, netlist_xml_path: Path) -> Tuple[bool, str]:
+        """Apply a KiCad XML netlist to a PCB using pcbnew API.
+
+        This is used instead of `kicad-cli pcb import netlist` (not reliable/available across KiCad builds).
+        It:
+          - adds missing footprints from the netlist (if footprint field is present and loadable)
+          - creates missing nets
+          - assigns pad nets based on (ref, pin)
+        """
+        try:
+            tree = ET.parse(str(netlist_xml_path))
+            root = tree.getroot()
+        except Exception as e:
+            return False, f"Cannot parse netlist XML: {e}"
+
+        try:
+            board = pcbnew.LoadBoard(str(pcb_path))
+        except Exception as e:
+            return False, f"Failed to load board: {e}"
+
+        # Existing footprints by reference
+        existing: Dict[str, pcbnew.FOOTPRINT] = {}
+        for fp in board.Footprints():
+            existing[fp.GetReference()] = fp
+
+        # Add missing footprints (placed on a simple grid, marked as needing placement)
+        added = 0
+        for comp in root.findall(".//components/comp"):
+            ref = (comp.get("ref") or "").strip()
+            if not ref or ref in existing:
+                continue
+
+            fp_id = (comp.findtext("footprint") or "").strip()
+            if ":" not in fp_id:
+                continue
+            lib, name = fp_id.split(":", 1)
+
+            fp = pcbnew.FootprintLoad(lib, name)
+            if not fp:
+                continue
+
+            fp.SetReference(ref)
+            val = (comp.findtext("value") or "").strip()
+            if val:
+                fp.SetValue(val)
+
+            if hasattr(fp, "SetNeedsPlaced"):
+                fp.SetNeedsPlaced(True)
+
+            x_mm = (added % 10) * 10.0
+            y_mm = (added // 10) * 10.0
+            fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x_mm), pcbnew.FromMM(y_mm)))
+
+            board.Add(fp)
+            existing[ref] = fp
+            added += 1
+
+        # Ensure nets exist
+        for net in root.findall(".//nets/net"):
+            name = (net.get("name") or "").strip()
+            if not name:
+                continue
+            if not board.FindNet(name):
+                board.Add(pcbnew.NETINFO_ITEM(board, name))
+
+        # Assign pad nets
+        for net in root.findall(".//nets/net"):
+            name = (net.get("name") or "").strip()
+            net_item = board.FindNet(name) if name else None
+            if not net_item:
+                continue
+            for node in net.findall("node"):
+                r = (node.get("ref") or "").strip()
+                p = (node.get("pin") or "").strip()
+                if not r or not p:
+                    continue
+                fp = existing.get(r)
+                if not fp:
+                    continue
+                pad = fp.FindPadByNumber(p)
+                if pad:
+                    pad.SetNet(net_item)
+
+        try:
+            pcbnew.SaveBoard(str(pcb_path), board)
+        except Exception as e:
+            return False, f"Failed to save board: {e}"
+
+        return True, f"Applied netlist (added {added} footprints)"
+
+
     def _filter_netlist(self, netlist_path: Path, exclude_refs: Set[str]) -> Path:
         """Create a filtered netlist excluding specified references."""
         
