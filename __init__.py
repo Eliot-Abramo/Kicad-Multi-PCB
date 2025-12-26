@@ -22,6 +22,7 @@ import os
 import json
 import subprocess
 import shutil
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Set
@@ -39,9 +40,7 @@ FOOTPRINT_LIB_NAME = "MultiBoard_Blocks"
 BOARD_BLOCK_PREFIX = "BoardBlock_"
 PORT_PAD_SIZE = 1.0  # mm
 BLOCK_LINE_WIDTH = 0.3  # mm
-
-# Netlist export format: plugin parses legacy XML
-NETLIST_EXPORT_FORMAT = "kicadxml"
+NETLIST_EXPORT_FORMAT = "kicadxml"  # KiCad CLI netlist format (XML)
 
 
 # ============================================================================
@@ -152,81 +151,11 @@ class ProjectManager:
         self._detect_root_files()
         self.load()
     
-
-    def _kicad_cli_exe(self) -> Optional[str]:
-        """Locate kicad-cli in PATH or common KiCad install env vars (Windows)."""
-        exe = shutil.which("kicad-cli")
-        if exe:
-            return exe
-
-        if os.name == "nt":
-            for env in ("KICAD_INSTALL_PATH", "KICAD9_INSTALL_PATH", "KICAD8_INSTALL_PATH", "KICAD7_INSTALL_PATH"):
-                base = os.environ.get(env)
-                if not base:
-                    continue
-                cand = Path(base) / "bin" / "kicad-cli.exe"
-                if cand.exists():
-                    return str(cand)
-
-        return None
-
-    def _run_kicad_cli(self, args: List[str]) -> Tuple[int, str]:
-        """Run kicad-cli and return (returncode, combined_output)."""
-        exe = self._kicad_cli_exe()
-        if not exe:
-            return 127, "kicad-cli not found (not in PATH)"
-        try:
-            p = subprocess.run([exe] + args, capture_output=True, text=True, cwd=str(self.project_path))
-            out = (p.stdout or "") + ("\n" if p.stdout and p.stderr else "") + (p.stderr or "")
-            return p.returncode, (out or "").strip()
-        except Exception as e:
-            return 126, str(e)
-
-    def _ensure_board_miniproject(self, board_pcb_path: Path) -> Tuple[bool, str]:
-        """Option B: create a per-board mini-project so KiCad doesn't auto-generate files.
-
-        Strategy:
-          - create <stem>.kicad_pro (minimal JSON), <stem>.kicad_prl (minimal JSON)
-          - create <stem>.kicad_sch as a hardlink to root schematic (fallback: copy)
-        """
-        stem = board_pcb_path.stem
-        pro_path = board_pcb_path.with_suffix(".kicad_pro")
-        prl_path = board_pcb_path.with_suffix(".kicad_prl")
-        sch_link_path = board_pcb_path.with_suffix(".kicad_sch")
-
-        # root schematic must exist
-        if not self.project.root_schematic:
-            return False, "Root schematic not detected (.kicad_sch not found next to root .kicad_pro)"
-        root_sch_path = self.project_path / self.project.root_schematic
-        if not root_sch_path.exists():
-            return False, f"Root schematic missing: {root_sch_path.name}"
-
-        # 1) schematic link/copy
-        try:
-            if not sch_link_path.exists():
-                try:
-                    os.link(str(root_sch_path), str(sch_link_path))  # NTFS hardlink
-                except Exception:
-                    shutil.copy2(str(root_sch_path), str(sch_link_path))
-        except Exception as e:
-            return False, f"Failed to create per-board schematic link/copy: {e}"
-
-        # 2) minimal project files (KiCad will happily overwrite/extend these)
-        try:
-            if not pro_path.exists():
-                minimal = {"meta": {"version": 1}, "project": {"title": stem}}
-                pro_path.write_text(json.dumps(minimal, indent=2), encoding="utf-8")
-            if not prl_path.exists():
-                prl_path.write_text("{}", encoding="utf-8")
-        except Exception as e:
-            return False, f"Failed to create per-board project files: {e}"
-
-        return True, "OK"
-
     def _detect_root_files(self):
         """Find the main .kicad_pro and associated files."""
         for f in self.project_path.glob("*.kicad_pro"):
             base_name = f.stem
+            self.root_project_file = f.name
             sch_file = f.with_suffix(".kicad_sch")
             pcb_file = f.with_suffix(".kicad_pcb")
             
@@ -236,6 +165,610 @@ class ProjectManager:
                 self.project.root_pcb = pcb_file.name
             break
     
+
+    # -------------------------------------------------------------------------
+    # KiCad CLI helpers
+    # -------------------------------------------------------------------------
+
+    def _kicad_cli_exe(self) -> Optional[str]:
+        """
+        Locate kicad-cli in a way that works across typical installs.
+
+        Resolution order:
+          1) PATH (shutil.which)
+          2) KiCad install env vars (KICAD*_INSTALL_PATH, KICAD_INSTALL_PATH)
+          3) Derive from the running embedded Python executable (sys.executable)
+          4) Derive from pcbnew module location
+          5) Probe common install roots (ProgramFiles / LocalAppData Programs) with light globbing
+
+        Returns absolute path as str, or None if not found.
+        """
+        # 1) PATH
+        exe = shutil.which("kicad-cli")
+        if exe:
+            return exe
+
+        def _candidate_from_root(root: Path) -> Optional[str]:
+            names = ["kicad-cli.exe"] if os.name == "nt" else ["kicad-cli"]
+            for nm in names:
+                for cand in (root / "bin" / nm, root / nm):
+                    if cand.exists():
+                        return str(cand)
+            return None
+
+        # 2) Env vars
+        if os.name == "nt":
+            for env in (
+                "KICAD9_INSTALL_PATH", "KICAD8_INSTALL_PATH", "KICAD7_INSTALL_PATH",
+                "KICAD_INSTALL_PATH",
+            ):
+                base = os.environ.get(env)
+                if base:
+                    found = _candidate_from_root(Path(base))
+                    if found:
+                        return found
+
+        # 3) From sys.executable
+        try:
+            exe_path = Path(sys.executable).resolve()
+            for parent in (exe_path.parent, *exe_path.parents):
+                found = _candidate_from_root(parent)
+                if found:
+                    return found
+        except Exception:
+            pass
+
+        # 4) From pcbnew module location
+        try:
+            import pcbnew as _pcbnew  # type: ignore
+            mod_path = Path(getattr(_pcbnew, "__file__", "")).resolve()
+            for parent in (mod_path.parent, *mod_path.parents):
+                found = _candidate_from_root(parent)
+                if found:
+                    return found
+        except Exception:
+            pass
+
+        # 5) Probe common roots (bounded)
+        if os.name == "nt":
+            roots = []
+            for env in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+                val = os.environ.get(env)
+                if val:
+                    roots.append(Path(val))
+
+            patterns = [
+                Path("KiCad") / "*" / "bin" / "kicad-cli.exe",
+                Path("Programs") / "KiCad" / "*" / "bin" / "kicad-cli.exe",
+            ]
+            for root in roots:
+                for rel in patterns:
+                    try:
+                        for cand in root.glob(str(rel)):
+                            if cand.exists():
+                                return str(cand)
+                    except Exception:
+                        continue
+
+        return None
+
+    def _run_kicad_cli(self, argv: List[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+        """
+        Run kicad-cli with a resolved executable path.
+
+        argv must NOT include the executable name. Example:
+            self._run_kicad_cli(["sch", "export", "netlist", "--format", "kicadxml", "-o", "...", "..."])
+        """
+        exe = self._kicad_cli_exe()
+        if not exe:
+            raise FileNotFoundError("kicad-cli not found (not in PATH and not in standard install locations)")
+
+        return subprocess.run(
+            [exe, *argv],
+            capture_output=True,
+            text=True,
+            cwd=str(cwd or self.project_path),
+        )
+
+    # -------------------------------------------------------------------------
+    # File/link helpers (keep ONE physical schematic, but make paths resolvable)
+    # -------------------------------------------------------------------------
+
+    def _expand_kicad_vars(self, s: str, kiprjmod: Path) -> str:
+        """Expand ${KIPRJMOD} / $(KIPRJMOD) plus any ${ENV} from os.environ."""
+        # Normalize separators inside variable expansions
+        out = s.replace("$(KIPRJMOD)", "${KIPRJMOD}")
+        # Expand ${...}
+        def repl(m: re.Match) -> str:
+            key = m.group(1)
+            if key == "KIPRJMOD":
+                return kiprjmod.as_posix()
+            return os.environ.get(key, m.group(0))
+        out = re.sub(r"\$\{([^}]+)\}", repl, out)
+        return out
+
+    def _sheet_token_to_relpath(self, token: str) -> Optional[Path]:
+        """
+        Convert a sheet file token (as stored in .kicad_sch) to a *project-relative* path.
+
+        If the token is absolute, returns None (we won't link it).
+        If token uses ${KIPRJMOD}/..., returns the suffix path.
+        Otherwise returns Path(token) (normalized).
+        """
+        t = token.strip().replace("\\", "/")
+        if not t:
+            return None
+
+        # KIPRJMOD forms
+        t2 = t.replace("$(KIPRJMOD)", "${KIPRJMOD}")
+        if t2.startswith("${KIPRJMOD}"):
+            t2 = t2[len("${KIPRJMOD}"):]
+            t2 = t2.lstrip("/")
+
+        p = Path(t2)
+        if p.is_absolute():
+            return None
+        # Avoid leading './'
+        if str(p).startswith("."):
+            try:
+                p = p.relative_to(".")
+            except Exception:
+                pass
+        return p
+
+    def _link_shared_file(self, src: Path, dst: Path) -> Tuple[bool, str]:
+        """
+        Create a link to src at dst without duplicating contents.
+
+        Preference order:
+          1) hardlink (keeps one physical file, best match to your requirement)
+          2) symlink (still one physical file, may require Windows dev mode/admin)
+        """
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            return False, f"Failed to create folder {dst.parent}: {e}"
+
+        # If already correct, nothing to do
+        try:
+            if dst.exists():
+                # If it's already the same file (hardlink) or points to src (symlink), accept.
+                try:
+                    if dst.samefile(src):
+                        return True, "Already linked"
+                except Exception:
+                    # If not comparable, remove and recreate
+                    pass
+                try:
+                    dst.unlink()
+                except Exception as e:
+                    return False, f"Failed to remove existing {dst}: {e}"
+        except Exception:
+            pass
+
+        # Hardlink first (best: truly one physical file)
+        try:
+            os.link(str(src), str(dst))
+            return True, "Hardlink created"
+        except Exception:
+            pass
+
+        # Symlink fallback
+        try:
+            os.symlink(str(src), str(dst))
+            return True, "Symlink created"
+        except Exception as e:
+            return False, (
+                f"Could not create hardlink/symlink for {dst.name}. "
+                f"On Windows, symlinks may require Developer Mode or admin rights. Details: {e}"
+            )
+
+    def _extract_sheet_file_tokens(self, sch_path: Path) -> List[str]:
+        """
+        Extract all `(file "<...>")` tokens from a KiCad .kicad_sch (s-expression) file.
+
+        This is intentionally simple and robust: we treat the schematic as text.
+        """
+        try:
+            data = sch_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return []
+        return re.findall(r'\(\s*file\s+"([^"]+)"\s*\)', data)
+
+    def _collect_sheet_files_recursive(self, root_sch: Path) -> List[str]:
+        """
+        Recursively collect sheet file tokens from root_sch and all nested sheet files.
+        """
+        out = []
+        visited = set()
+
+        def walk(sch: Path):
+            try:
+                key = str(sch.resolve())
+            except Exception:
+                key = str(sch)
+            if key in visited:
+                return
+            visited.add(key)
+
+            tokens = self._extract_sheet_file_tokens(sch)
+            for t in tokens:
+                out.append(t)
+
+                # Recurse if resolvable to a local file
+                rel = self._sheet_token_to_relpath(t)
+                if rel is None:
+                    continue
+                child = (root_sch.parent / rel).resolve()
+                if child.exists():
+                    walk(child)
+
+        walk(root_sch)
+        return out
+
+    def _rewrite_lib_table_with_absolute_kiprjmod(self, src: Path, dst: Path, root_dir: Path) -> Tuple[bool, str]:
+        """
+        Write a per-board lib table where ${KIPRJMOD} is replaced by the *root* project directory.
+
+        This is critical: if the project uses ${KIPRJMOD} inside fp-lib-table/sym-lib-table, then
+        opening a mini-project in boards/<name>/ would otherwise point those paths at the board folder.
+        """
+        if not src.exists():
+            return True, "No table to rewrite"
+
+        try:
+            data = src.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            return False, f"Failed to read {src.name}: {e}"
+
+        root_posix = root_dir.as_posix()
+        data2 = data.replace("${KIPRJMOD}", root_posix).replace("$(KIPRJMOD)", root_posix)
+
+        try:
+            dst.write_text(data2, encoding="utf-8", errors="ignore")
+        except Exception as e:
+            return False, f"Failed to write {dst.name}: {e}"
+
+        return True, "Rewritten"
+
+    def _ensure_miniproject_schematic_assets(self, board: SubBoardDefinition, pcb_path: Path) -> Tuple[bool, str]:
+        """
+        Ensure the board folder contains a schematic entrypoint and all hierarchical sheets.
+
+        Why:
+          * KiCad resolves hierarchical sheet paths relative to the project folder (KIPRJMOD),
+            NOT necessarily relative to the physical location of the root schematic.
+          * Therefore every mini-project folder must have a *path-compatible* view of the schematic.
+          * To keep a single physical schematic, we hardlink/symlink the root schematic and all its
+            hierarchical sheet files into the board folder, preserving relative paths.
+
+        This makes the root schematic unambiguous: it is always self.project.root_schematic, shared by all.
+        """
+        if not self.project.root_schematic:
+            return False, "Root schematic not set."
+
+        root_sch = (self.project_path / self.project.root_schematic).resolve()
+        if not root_sch.exists():
+            return False, f"Root schematic does not exist: {root_sch}"
+
+        board_dir = pcb_path.parent.resolve()
+        board_stem = pcb_path.stem
+        board_sch = board_dir / f"{board_stem}.kicad_sch"
+
+        # 1) Link the root schematic under the board project name
+        ok, msg = self._link_shared_file(root_sch, board_sch)
+        if not ok:
+            return False, f"Root schematic link failed: {msg}"
+
+        # 2) Link all hierarchical sheets (and nested sheets) into board folder
+        tokens = self._collect_sheet_files_recursive(root_sch)
+        for token in tokens:
+            rel = self._sheet_token_to_relpath(token)
+            if rel is None:
+                # Absolute paths are not linked; keep as-is.
+                continue
+
+            # Source is resolved relative to the *root schematic directory* (root_sch.parent)
+            src = (root_sch.parent / rel).resolve()
+            if not src.exists():
+                return False, (
+                    "Missing hierarchical sheet referenced by root schematic:\n"
+                    f"  token: {token}\n"
+                    f"  expected at: {src}\n\n"
+                    "Fix: ensure your project has a consistent schematic folder layout (or move the missing sheet next to the root schematic, "
+                    "or adjust the sheet file path in the schematic)."
+                )
+
+            dst = (board_dir / rel).resolve()
+            ok, msg2 = self._link_shared_file(src, dst)
+            if not ok:
+                return False, f"Failed to link sheet '{token}' to '{dst}': {msg2}"
+
+        # 3) Create per-board lib tables with absolute KIPRJMOD so libraries resolve correctly
+        #    (This does not duplicate symbols/footprints; it's just a small text file.)
+        root_dir = root_sch.parent.resolve()
+        for tbl_name in ("fp-lib-table", "sym-lib-table"):
+            src_tbl = root_dir / tbl_name
+            dst_tbl = board_dir / tbl_name
+            ok, msg3 = self._rewrite_lib_table_with_absolute_kiprjmod(src_tbl, dst_tbl, root_dir)
+            if not ok:
+                return False, msg3
+
+        return True, "OK"
+
+    # -------------------------------------------------------------------------
+    # Netlist -> PCB import (no reliance on kicad-cli "pcb import netlist")
+    # -------------------------------------------------------------------------
+
+    def _parse_fp_lib_table(self, table_path: Path) -> Dict[str, str]:
+        """
+        Minimal parser for fp-lib-table to resolve footprint library nicknames to URIs.
+
+        Returns {nickname: uri_str}. If table doesn't exist, returns empty dict.
+
+        Implementation: small s-expression block extractor for top-level `(lib ...)` entries.
+        """
+        if not table_path.exists():
+            return {}
+        try:
+            data = table_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return {}
+
+        libs: Dict[str, str] = {}
+
+        # Extract `(lib ...)` blocks at the top level
+        i = 0
+        n = len(data)
+        while i < n:
+            j = data.find("(lib", i)
+            if j == -1:
+                break
+            # Ensure token boundary
+            if j > 0 and data[j-1].isalnum():
+                i = j + 4
+                continue
+
+            depth = 0
+            k = j
+            while k < n:
+                ch = data[k]
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        block = data[j:k+1]
+                        m_name = re.search(r'\(\s*name\s+"([^"]+)"\s*\)', block)
+                        m_uri = re.search(r'\(\s*uri\s+"([^"]+)"\s*\)', block)
+                        if m_name and m_uri:
+                            libs[m_name.group(1)] = m_uri.group(1)
+                        i = k + 1
+                        break
+                k += 1
+            else:
+                break  # unmatched parentheses, stop
+        return libs
+
+    def _resolve_fp_library_path(self, lib_nick: str, project_dir: Path) -> Optional[Path]:
+        """
+        Resolve a footprint library nickname to an on-disk library directory (typically a .pretty folder).
+        """
+        table = self._parse_fp_lib_table(project_dir / "fp-lib-table")
+        uri = table.get(lib_nick)
+        if not uri:
+            return None
+
+        uri2 = self._expand_kicad_vars(uri, kiprjmod=project_dir)
+        uri2 = uri2.replace("\\", "/")
+
+        # "file:" URIs are common in fp-lib-table
+        if uri2.startswith("file:"):
+            uri2 = uri2[5:]
+        p = Path(uri2)
+        if not p.is_absolute():
+            p = (project_dir / p).resolve()
+        return p
+
+    def _load_footprint_from_library(self, lib_path: Path, fp_name: str):
+        """
+        Load a footprint using the low-level PCB_IO_KICAD_SEXPR API.
+
+        This avoids the common NoneType FootprintLoad failure when trying to go through
+        a plugin lookup that can return None.
+        """
+        import pcbnew as kpcb  # type: ignore
+
+        # KiCad 6+ exposes PCB_IO_KICAD_SEXPR with GetEnumeratedFootprint()
+        try:
+            io = kpcb.PCB_IO_KICAD_SEXPR()
+            fp = io.GetEnumeratedFootprint(str(lib_path), fp_name)
+            return fp
+        except Exception:
+            # Fallback: module-level helper if available
+            if hasattr(kpcb, "FootprintLoad"):
+                try:
+                    return kpcb.FootprintLoad(str(lib_path), fp_name)
+                except Exception:
+                    return None
+            return None
+
+    def _apply_kicadxml_netlist_to_pcb(self, pcb_path: Path, netlist_xml: Path) -> Tuple[bool, str]:
+        """
+        Apply a KiCad XML netlist to a PCB file using pcbnew Python API.
+
+        This function focuses on the critical part you need for the multi-PCB workflow:
+          * ensure the required footprints for this board exist (add missing)
+          * ensure pad nets are assigned according to the netlist
+
+        It does NOT try to be a full replacement for KiCad's GUI "Update PCB from Schematic"
+        (that tool also handles fields/UUID relinking, footprint replacement policies, deletions, etc.).
+        But it is deterministic and works without relying on `kicad-cli pcb import netlist`
+        (which is brittle across versions and installations).
+        """
+        import pcbnew as kpcb  # type: ignore
+
+        if not pcb_path.exists():
+            return False, f"PCB file does not exist: {pcb_path}"
+        if not netlist_xml.exists():
+            return False, f"Netlist file does not exist: {netlist_xml}"
+
+        try:
+            board = kpcb.LoadBoard(str(pcb_path))
+        except Exception as e:
+            return False, f"Failed to load PCB: {e}"
+
+        # Build existing footprint map by reference
+        existing = {}
+        try:
+            for fp in board.GetFootprints():
+                try:
+                    existing[str(fp.GetReference())] = fp
+                except Exception:
+                    continue
+        except Exception:
+            # Older API: fall back to iterator
+            try:
+                fp = board.GetFirstFootprint()
+                while fp:
+                    existing[str(fp.GetReference())] = fp
+                    fp = fp.Next()
+            except Exception:
+                pass
+
+        # Parse netlist
+        try:
+            tree = ET.parse(netlist_xml)
+            root = tree.getroot()
+        except Exception as e:
+            return False, f"Failed to parse netlist XML: {e}"
+
+        comps = []
+        for comp in root.findall(".//components/comp"):
+            ref = (comp.get("ref") or "").strip()
+            if not ref:
+                continue
+            value = (comp.findtext("value") or "").strip()
+            fp_id = (comp.findtext("footprint") or "").strip()  # "LibNick:FootprintName"
+            comps.append((ref, value, fp_id))
+
+        # Ensure nets exist
+        netinfo = board.GetNetInfo()
+        def get_or_create_net(netname: str):
+            n = netinfo.GetNetItem(netname)
+            if n:
+                return n
+            # Create new net
+            ni = kpcb.NETINFO_ITEM(board, netname)
+            netinfo.AppendNet(ni)
+            return ni
+
+        # Add missing footprints
+        board_dir = pcb_path.parent.resolve()
+        added = 0
+        missing_fp = []
+        for ref, value, fp_id in comps:
+            if ref in existing:
+                continue
+            if not fp_id or ":" not in fp_id:
+                missing_fp.append((ref, fp_id))
+                continue
+
+            lib_nick, fp_name = fp_id.split(":", 1)
+            lib_path = self._resolve_fp_library_path(lib_nick, board_dir)
+
+            fp = None
+            if lib_path:
+                fp = self._load_footprint_from_library(lib_path, fp_name)
+
+            # Last fallback: try whatever pcbnew can do with nickname directly
+            if fp is None and hasattr(kpcb, "FootprintLoad"):
+                try:
+                    fp = kpcb.FootprintLoad(lib_nick, fp_name)
+                except Exception:
+                    fp = None
+
+            if fp is None:
+                missing_fp.append((ref, fp_id))
+                continue
+
+            try:
+                fp.SetReference(ref)
+            except Exception:
+                pass
+            try:
+                fp.SetValue(value)
+            except Exception:
+                pass
+
+            # Place at origin for now; user can move it.
+            try:
+                fp.SetPosition(kpcb.VECTOR2I(0, 0))
+            except Exception:
+                pass
+
+            try:
+                board.Add(fp)
+                existing[ref] = fp
+                added += 1
+            except Exception as e:
+                missing_fp.append((ref, fp_id + f" (add failed: {e})"))
+
+        # Assign nets to pads from netlist
+        nets_elem = root.find(".//nets")
+        if nets_elem is not None:
+            for net in nets_elem.findall("net"):
+                netname = (net.get("name") or "").strip()
+                if not netname:
+                    continue
+                ni = get_or_create_net(netname)
+
+                for node in net.findall("node"):
+                    ref = (node.get("ref") or "").strip()
+                    pin = (node.get("pin") or "").strip()
+                    if not ref or not pin:
+                        continue
+                    fp = existing.get(ref)
+                    if not fp:
+                        continue
+                    try:
+                        pad = fp.FindPadByNumber(pin)
+                    except Exception:
+                        pad = None
+                    if pad:
+                        try:
+                            pad.SetNet(ni)
+                        except Exception:
+                            pass
+
+        # Refresh connectivity where available
+        try:
+            board.BuildConnectivity()
+        except Exception:
+            pass
+
+        try:
+            kpcb.SaveBoard(str(pcb_path), board)
+        except Exception as e:
+            return False, f"Failed to save updated PCB: {e}"
+
+        if missing_fp:
+            detail = "\n".join([f"  {r}: {f}" for r, f in missing_fp[:40]])
+            more = "" if len(missing_fp) <= 40 else f"\n  ... plus {len(missing_fp)-40} more"
+            return False, (
+                f"Netlist applied partially.\n"
+                f"Added footprints: {added}\n"
+                f"Missing/unloadable footprints: {len(missing_fp)}\n"
+                f"{detail}{more}\n\n"
+                f"Most common causes:\n"
+                f"  * footprint library nickname not resolvable in fp-lib-table in: {board_dir}\n"
+                f"  * footprint name typo in schematic\n"
+                f"  * footprint library is not installed on this machine\n"
+            )
+
+        return True, f"Netlist applied successfully. Added {added} new footprints."
+
+
     def load(self):
         if self.config_file.exists():
             try:
@@ -298,7 +831,7 @@ class ProjectManager:
         lines.append(f'  (property "Value" "{board.name}" (at 0 0 0) (layer "F.Fab")')
         lines.append(f'    (effects (font (size 2 2) (thickness 0.2)))')
         lines.append(f'  )')
-        lines.append(f'  (property "Footprint" "{FOOTPRINT_LIB_NAME}:{fp_name}" (at 0 0 0) (layer "F.Fab") hide')
+        lines.append(f'  (property "Footprint" "{FOOTPRINT_LIB_NAME}:{fp_name}" (at 0 0 0) (layer "F.Fab") hide)')
         lines.append(f'    (effects (font (size 1.27 1.27) (thickness 0.15)))')
         lines.append(f'  )')
         
@@ -429,24 +962,37 @@ class ProjectManager:
     # -------------------------------------------------------------------------
     
     def create_sub_board_pcb(self, board: SubBoardDefinition) -> Tuple[bool, str]:
-        """Create the sub-board PCB file."""
-        
-        pcb_path = self.project_path / board.pcb_filename
-        
+        """Create the sub-board PCB file.
+
+        The PCB is created inside its own folder (relative to the root project folder),
+        e.g. boards/<board_name>/<board_name>.kicad_pcb.
+
+        We also create/link the schematic files required for the mini-project so that:
+          * there is only one physical schematic (hardlink preferred), shared by all boards
+          * hierarchical sheet file paths resolve when opening the mini-project
+        """
+
+        pcb_path = (self.project_path / board.pcb_filename).resolve()
+
         if pcb_path.exists():
             return False, f"PCB file already exists: {board.pcb_filename}"
-        
+
+        # Ensure the board folder exists (mini-project folder)
+        pcb_path.parent.mkdir(parents=True, exist_ok=True)
+
         # Create minimal PCB with correct layer count
         success = self._write_empty_pcb(pcb_path, board.layers)
         if not success:
             return False, "Failed to write PCB file"
-        
-        # Option B: create a per-board mini-project (prevents KiCad auto-generating .kicad_pro)
-        ok, detail = self._ensure_board_miniproject(pcb_path)
+
+        # Ensure the mini-project contains a shared schematic entrypoint + all needed sheet files
+        ok, msg = self._ensure_miniproject_schematic_assets(board, pcb_path)
         if not ok:
-            return False, detail
+            # PCB exists already; don't delete it automatically.
+            return False, f"PCB created, but schematic linking failed: {msg}"
 
         return True, f"Created {board.pcb_filename}"
+
     
     def _write_empty_pcb(self, filepath: Path, layer_count: int) -> bool:
         """Write an empty PCB file with specified copper layers."""
@@ -577,14 +1123,14 @@ class ProjectManager:
         sch_path = self.project_path / self.project.root_schematic
         
         try:
-            rc, out = self._run_kicad_cli([
-                "sch", "export", "netlist",
-                "--format", NETLIST_EXPORT_FORMAT,
-                "-o", str(netlist_path),
-                str(sch_path),
-            ])
-
-            if rc == 0 and netlist_path.exists():
+            result = self._run_kicad_cli(
+                ["sch", "export", "netlist", "--format", NETLIST_EXPORT_FORMAT,
+                 "-o", str(netlist_path),
+                 str(sch_path)],
+                cwd=self.project_path
+            )
+            
+            if result.returncode == 0 and netlist_path.exists():
                 components = self._parse_netlist_components(netlist_path)
                 netlist_path.unlink()  # Clean up
         except FileNotFoundError:
@@ -626,6 +1172,13 @@ class ProjectManager:
         if not pcb_path.exists():
             return False, f"PCB file not found: {board.pcb_filename}"
         
+
+        # Ensure this board folder has a path-compatible view of the root schematic (hardlinks/symlinks)
+        # and per-board lib tables (so footprint libraries resolve even if fp-lib-table uses ${KIPRJMOD}).
+        ok, msg = self._ensure_miniproject_schematic_assets(board, pcb_path.resolve())
+        if not ok:
+            return False, msg
+
         if not self.project.root_schematic:
             return False, "Root schematic not detected"
         
@@ -646,129 +1199,52 @@ class ProjectManager:
         temp_netlist = self.project_path / f".temp_{board_name}_netlist.xml"
         
         try:
-            # Generate full netlist
-            rc, out = self._run_kicad_cli(["sch","export","netlist","--format",NETLIST_EXPORT_FORMAT,"-o", str(temp_netlist), str(sch_path)])
-            
-            if rc != 0:
-                return False, f"Failed to generate netlist: {out}"
-            
+            # Generate full netlist (XML) using a resolved kicad-cli
+            result = self._run_kicad_cli(
+                ["sch", "export", "netlist", "--format", NETLIST_EXPORT_FORMAT,
+                 "-o", str(temp_netlist),
+                 str(sch_path)],
+                cwd=self.project_path
+            )
+
+            if result.returncode != 0:
+                return False, f"Failed to generate netlist: {result.stderr}"
+
             # 4. Filter the netlist (remove excluded components)
             filtered_netlist = self._filter_netlist(temp_netlist, exclude_refs)
-            
-            # 5. Use kicad-cli to update PCB
-            ok, detail = self._apply_kicadxml_netlist_to_pcb(pcb_path, filtered_netlist)
-            
+
+            # 5. Apply the filtered netlist to the PCB using pcbnew API (no `kicad-cli pcb import netlist`)
+            ok, msg = self._apply_kicadxml_netlist_to_pcb(pcb_path.resolve(), filtered_netlist.resolve())
+
             # Clean up temp files
-            if temp_netlist.exists():
-                temp_netlist.unlink()
-            if filtered_netlist.exists():
-                filtered_netlist.unlink()
-            
-            if rc != 0:
-                return False, f"Failed to import netlist: {result.stderr}"
-            
+            try:
+                if temp_netlist.exists():
+                    temp_netlist.unlink()
+            except Exception:
+                pass
+            try:
+                if filtered_netlist.exists():
+                    filtered_netlist.unlink()
+            except Exception:
+                pass
+
+            if not ok:
+                return False, msg
+
             # 6. Update placement tracking
             self.scan_placed_components()
-            
-            return True, f"Updated {board.pcb_filename}\nExcluded {len(exclude_refs)} components already on other boards"
-            
-        except FileNotFoundError:
-            return False, "kicad-cli not found. Make sure KiCad 9.0 is installed and in PATH."
+
+            return True, (
+                f"Updated {board.pcb_filename}\n"
+                f"{msg}\n"
+                f"Excluded {len(exclude_refs)} components already on other boards"
+            )
+
+        except FileNotFoundError as e:
+            return False, str(e)
         except Exception as e:
             return False, f"Error: {str(e)}"
     
-
-    def _apply_kicadxml_netlist_to_pcb(self, pcb_path: Path, netlist_xml_path: Path) -> Tuple[bool, str]:
-        """Apply a KiCad XML netlist to a PCB using pcbnew API.
-
-        This is used instead of `kicad-cli pcb import netlist` (not reliable/available across KiCad builds).
-        It:
-          - adds missing footprints from the netlist (if footprint field is present and loadable)
-          - creates missing nets
-          - assigns pad nets based on (ref, pin)
-        """
-        try:
-            tree = ET.parse(str(netlist_xml_path))
-            root = tree.getroot()
-        except Exception as e:
-            return False, f"Cannot parse netlist XML: {e}"
-
-        try:
-            board = pcbnew.LoadBoard(str(pcb_path))
-        except Exception as e:
-            return False, f"Failed to load board: {e}"
-
-        # Existing footprints by reference
-        existing: Dict[str, pcbnew.FOOTPRINT] = {}
-        for fp in board.Footprints():
-            existing[fp.GetReference()] = fp
-
-        # Add missing footprints (placed on a simple grid, marked as needing placement)
-        added = 0
-        for comp in root.findall(".//components/comp"):
-            ref = (comp.get("ref") or "").strip()
-            if not ref or ref in existing:
-                continue
-
-            fp_id = (comp.findtext("footprint") or "").strip()
-            if ":" not in fp_id:
-                continue
-            lib, name = fp_id.split(":", 1)
-
-            fp = pcbnew.FootprintLoad(lib, name)
-            if not fp:
-                continue
-
-            fp.SetReference(ref)
-            val = (comp.findtext("value") or "").strip()
-            if val:
-                fp.SetValue(val)
-
-            if hasattr(fp, "SetNeedsPlaced"):
-                fp.SetNeedsPlaced(True)
-
-            x_mm = (added % 10) * 10.0
-            y_mm = (added // 10) * 10.0
-            fp.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(x_mm), pcbnew.FromMM(y_mm)))
-
-            board.Add(fp)
-            existing[ref] = fp
-            added += 1
-
-        # Ensure nets exist
-        for net in root.findall(".//nets/net"):
-            name = (net.get("name") or "").strip()
-            if not name:
-                continue
-            if not board.FindNet(name):
-                board.Add(pcbnew.NETINFO_ITEM(board, name))
-
-        # Assign pad nets
-        for net in root.findall(".//nets/net"):
-            name = (net.get("name") or "").strip()
-            net_item = board.FindNet(name) if name else None
-            if not net_item:
-                continue
-            for node in net.findall("node"):
-                r = (node.get("ref") or "").strip()
-                p = (node.get("pin") or "").strip()
-                if not r or not p:
-                    continue
-                fp = existing.get(r)
-                if not fp:
-                    continue
-                pad = fp.FindPadByNumber(p)
-                if pad:
-                    pad.SetNet(net_item)
-
-        try:
-            pcbnew.SaveBoard(str(pcb_path), board)
-        except Exception as e:
-            return False, f"Failed to save board: {e}"
-
-        return True, f"Applied netlist (added {added} footprints)"
-
-
     def _filter_netlist(self, netlist_path: Path, exclude_refs: Set[str]) -> Path:
         """Create a filtered netlist excluding specified references."""
         
@@ -1004,7 +1480,7 @@ class NewSubBoardDialog(wx.Dialog):
         name = self.txt_name.GetValue().strip()
         if name:
             safe_name = "".join(c if c.isalnum() or c in "_-" else "_" for c in name)
-            self.txt_filename.SetValue(f"{safe_name}.kicad_pcb")
+            self.txt_filename.SetValue(str(Path("boards") / safe_name / f"{safe_name}.kicad_pcb"))
         else:
             self.txt_filename.SetValue("")
     
