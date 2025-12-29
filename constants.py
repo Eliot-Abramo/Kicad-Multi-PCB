@@ -1,29 +1,37 @@
 """
 Multi-Board PCB Manager - Constants and Configuration
+======================================================
+
 Centralized configuration values for consistent behavior.
-Author: Eliot Abramo
+
+Author: Eliot
+License: MIT
 """
 
 # =============================================================================
 # Directory and File Names
 # =============================================================================
+
 BOARDS_DIR = "boards"
 CONFIG_FILE = ".kicad_multiboard.json"
 
 # =============================================================================
 # Library Names
 # =============================================================================
+
 BLOCK_LIB_NAME = "MultiBoard_Blocks"
 PORT_LIB_NAME = "MultiBoard_Ports"
 
 # =============================================================================
 # Configuration
 # =============================================================================
-CONFIG_VERSION = "10.0"
+
+CONFIG_VERSION = "10.2"
 
 # =============================================================================
 # Default Values
 # =============================================================================
+
 DEFAULT_BLOCK_WIDTH = 50.0
 DEFAULT_BLOCK_HEIGHT = 35.0
 DEFAULT_PORT_POSITION = 0.5

@@ -18,8 +18,9 @@ import shutil
 import os
 import subprocess
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Set, Dict, Any
+
+import pcbnew
 
 from .config import BoardConfig, PortDef
 from .manager import MultiBoardManager
@@ -256,7 +257,7 @@ class PortEditDialog(BaseDialog):
     """Port configuration editor."""
     
     def __init__(self, parent, port: PortDef, existing_names: Set[str] = None):
-        super().__init__(parent, "Port Configuration", size=(480, 340), min_size=(420, 300))
+        super().__init__(parent, "Port Configuration", size=(500, 400), min_size=(420, 300))
         
         self.port = port
         self.existing_names = existing_names or set()
@@ -756,9 +757,7 @@ class MainDialog(BaseDialog):
         
         super().__init__(parent, "Multi-Board Manager",
                          size=(1200, 800), min_size=(800, 550))
-        
-        self.executor = ThreadPoolExecutor(max_workers=1)
-        
+                
         self._build_ui()
         self._refresh_list()
         
@@ -911,17 +910,27 @@ class MainDialog(BaseDialog):
     def _refresh_list(self):
         self.list.DeleteAllItems()
         
-        placed = self.manager.scan_all_boards(force=True)
+        placed = self.manager.scan_all_boards()
         counts: Dict[str, int] = {}
         for ref, (board, _) in placed.items():
             counts[board] = counts.get(board, 0) + 1
         
+        # Determine current board (if we're in a sub-board)
+        current_board = self._get_current_board_name()
+        
         for name, board in self.manager.config.boards.items():
-            idx = self.list.InsertItem(self.list.GetItemCount(), name)
+            # Add indent marker if this is the current board
+            display_name = f"  → {name}" if name == current_board else name
+            
+            idx = self.list.InsertItem(self.list.GetItemCount(), display_name)
             self.list.SetItem(idx, 1, str(counts.get(name, 0)))
             self.list.SetItem(idx, 2, str(len(board.ports)))
             self.list.SetItem(idx, 3, board.description or "—")
             self.list.SetItem(idx, 4, board.pcb_path)
+            
+            # Highlight current board row
+            if name == current_board:
+                self.list.SetItemBackgroundColour(idx, Colors.SELECTED)
         
         total_boards = len(self.manager.config.boards)
         total_components = sum(counts.values())
@@ -930,9 +939,34 @@ class MainDialog(BaseDialog):
         self.status_bar.set_status(f"{total_boards} board(s), {total_components} component(s) placed", 'ok')
         self._on_selection_changed(None)
     
+    def _get_current_board_name(self) -> Optional[str]:
+        """Determine if we're currently in a sub-board."""
+        try:
+            board = pcbnew.GetBoard()
+            if board:
+                pcb_path = Path(board.GetFileName())
+                # Check if this PCB is one of our sub-boards
+                for name, cfg in self.manager.config.boards.items():
+                    board_pcb = self.manager.project_dir / cfg.pcb_path
+                    try:
+                        if pcb_path.resolve() == board_pcb.resolve():
+                            return name
+                    except Exception:
+                        if pcb_path.name == board_pcb.name:
+                            return name
+        except Exception:
+            pass
+        return None
+    
     def _get_selected_name(self) -> Optional[str]:
         idx = self.list.GetFirstSelected()
-        return self.list.GetItemText(idx) if idx >= 0 else None
+        if idx < 0:
+            return None
+        name = self.list.GetItemText(idx)
+        # Remove indent marker if present (for current board highlighting)
+        if name.startswith("  → "):
+            name = name[4:]
+        return name
     
     def _on_selection_changed(self, event):
         has_sel = self.list.GetFirstSelected() >= 0
@@ -992,6 +1026,7 @@ class MainDialog(BaseDialog):
         
         del self.manager.config.boards[name]
         self.manager.save_config()
+        self.manager._scan_cache = None  # Invalidate cache
         
         self.status_bar.set_status(f"Removed '{name}'", 'ok')
         self._refresh_list()
@@ -1042,29 +1077,31 @@ class MainDialog(BaseDialog):
         
         progress = ProgressDialog(self, f"Updating {name}")
         progress.Show()
+        wx.Yield()  # Allow dialog to show
         self.status_bar.set_status(f"Updating '{name}'...", 'working')
         
-        def do_update():
-            return self.manager.update_board(name,
-                progress_callback=lambda p, m: wx.CallAfter(progress.update, p, m))
-        
-        def on_done(future):
-            wx.CallAfter(progress.Destroy)
-            try:
-                success, msg = future.result()
-                if success:
-                    wx.CallAfter(lambda: self.status_bar.set_status(f"Updated '{name}'", 'ok'))
-                    wx.CallAfter(lambda: wx.MessageBox(f"Update complete:\n\n{msg}", "Success", wx.ICON_INFORMATION))
-                else:
-                    wx.CallAfter(lambda: self.status_bar.set_status("Update failed", 'error'))
-                    wx.CallAfter(lambda: wx.MessageBox(msg, "Update Failed", wx.ICON_ERROR))
-                wx.CallAfter(self._refresh_list)
-            except Exception as e:
-                wx.CallAfter(lambda: self.status_bar.set_status("Update failed", 'error'))
-                wx.CallAfter(lambda: wx.MessageBox(str(e), "Error", wx.ICON_ERROR))
-        
-        future = self.executor.submit(do_update)
-        future.add_done_callback(on_done)
+        try:
+            success, msg = self.manager.update_board(name,
+                progress_callback=lambda p, m: (progress.update(p, m), wx.Yield()))
+            
+            progress.Destroy()
+            
+            if success:
+                self.status_bar.set_status(f"Updated '{name}'", 'ok')
+                # Add hint about P key if components were added
+                if "Added:" in msg and not msg.startswith("Added: 0"):
+                    msg += "\n\nTip: Select new components and press 'P' to pack them."
+                wx.MessageBox(f"Update complete:\n\n{msg}", "Success", wx.ICON_INFORMATION)
+            else:
+                self.status_bar.set_status("Update failed", 'error')
+                wx.MessageBox(msg, "Update Failed", wx.ICON_ERROR)
+            
+            self._refresh_list()
+            
+        except Exception as e:
+            progress.Destroy()
+            self.status_bar.set_status("Update failed", 'error')
+            wx.MessageBox(str(e), "Error", wx.ICON_ERROR)
     
     def _on_ports(self, event):
         name = self._get_selected_name()
@@ -1090,38 +1127,34 @@ class MainDialog(BaseDialog):
         
         progress = ProgressDialog(self, "Checking Connectivity")
         progress.Show()
+        wx.Yield()
         self.status_bar.set_status("Running checks...", 'working')
         
-        def do_check():
-            return self.manager.check_connectivity(
-                progress_callback=lambda p, m: wx.CallAfter(progress.update, p, m))
-        
-        def on_done(future):
-            wx.CallAfter(progress.Destroy)
-            try:
-                report = future.result()
-                errors = len(report.get("errors", []))
-                violations = sum(b.get("violations", 0) for b in report.get("boards", {}).values())
-                
-                if errors == 0 and violations == 0:
-                    status = ('All checks passed', 'ok')
-                elif errors > 0:
-                    status = (f'{errors} error(s)', 'error')
-                else:
-                    status = (f'{violations} violation(s)', 'warning')
-                
-                wx.CallAfter(lambda: self.status_bar.set_status(*status))
-                wx.CallAfter(lambda: ConnectivityReportDialog(self, report).ShowModal())
-            except Exception as e:
-                wx.CallAfter(lambda: self.status_bar.set_status("Check failed", 'error'))
-                wx.CallAfter(lambda: wx.MessageBox(str(e), "Error", wx.ICON_ERROR))
-        
-        future = self.executor.submit(do_check)
-        future.add_done_callback(on_done)
+        try:
+            report = self.manager.check_connectivity(
+                progress_callback=lambda p, m: (progress.update(p, m), wx.Yield()))
+            
+            progress.Destroy()
+            
+            errors = len(report.get("errors", []))
+            violations = sum(b.get("violations", 0) for b in report.get("boards", {}).values())
+            
+            if errors == 0 and violations == 0:
+                self.status_bar.set_status('All checks passed', 'ok')
+            elif errors > 0:
+                self.status_bar.set_status(f'{errors} error(s)', 'error')
+            else:
+                self.status_bar.set_status(f'{violations} violation(s)', 'warning')
+            
+            ConnectivityReportDialog(self, report).ShowModal()
+            
+        except Exception as e:
+            progress.Destroy()
+            self.status_bar.set_status("Check failed", 'error')
+            wx.MessageBox(str(e), "Error", wx.ICON_ERROR)
     
     def _on_status(self, event):
         StatusDialog(self, self.manager).ShowModal()
     
     def _on_close(self, event):
-        self.executor.shutdown(wait=False)
         self.Destroy()

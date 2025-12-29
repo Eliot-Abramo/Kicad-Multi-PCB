@@ -1,7 +1,11 @@
 """
 Multi-Board PCB Manager - Data Models
+======================================
+
 Data structures for project configuration, serialized to JSON.
+
 Author: Eliot
+License: MIT
 """
 
 from dataclasses import dataclass, field

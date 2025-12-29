@@ -145,11 +145,29 @@ class MultiBoardManager:
     # =========================================================================
     
     def _find_project_root(self, start: Path) -> Path:
+        """
+        Find the multiboard project root by searching for config file.
+        
+        This ensures sub-PCBs can see the full project hierarchy.
+        """
+        # First check if we're in a boards subdirectory
         for path in [start] + list(start.parents):
             if (path / CONFIG_FILE).exists():
                 return path
+            # Check if this looks like a board subdirectory
+            if path.name == BOARDS_DIR:
+                # Parent should be project root
+                if (path.parent / CONFIG_FILE).exists():
+                    return path.parent
+            # Check if parent has boards directory (we might be inside boards/xxx/)
+            if (path.parent / BOARDS_DIR).exists() and (path.parent / CONFIG_FILE).exists():
+                return path.parent
+        
+        # Fall back to finding any .kicad_pro
+        for path in [start] + list(start.parents):
             if list(path.glob("*.kicad_pro")):
                 return path
+        
         return start
     
     def _log(self, message: str):
@@ -398,113 +416,161 @@ class MultiBoardManager:
     # =========================================================================
     
     def _generate_block_footprint(self, board: BoardConfig):
-        """Generate a visually appealing block footprint."""
+        """Generate a visually appealing block footprint with correct KiCad 9 syntax."""
         self.block_lib_path.mkdir(parents=True, exist_ok=True)
         
         fp_name = f"Block_{board.name}"
         w, h = board.block_width, board.block_height
-        corner_r = min(3.0, w * 0.06, h * 0.06)  # Rounded corner radius
+        hw, hh = w/2, h/2
         
         lines = [
             f'(footprint "{fp_name}"',
-            '  (version 20240108) (generator "multiboard") (layer "F.Cu")',
+            '  (version 20240108)',
+            '  (generator "multiboard")',
+            '  (generator_version "10.0")',
+            '  (layer "F.Cu")',
             f'  (descr "Board block: {board.name}")',
             '  (attr board_only exclude_from_pos_files exclude_from_bom)',
         ]
         
-        # Reference and value text
-        lines.append(f'  (fp_text reference "REF**" (at 0 {-h/2 - 3:.2f}) (layer "F.SilkS")')
-        lines.append('    (effects (font (size 1.2 1.2) (thickness 0.2))))')
-        lines.append(f'  (fp_text value "{board.name}" (at 0 0) (layer "F.Fab")')
-        lines.append('    (effects (font (size 2 2) (thickness 0.3))))')
+        # Reference text
+        lines.append(f'  (fp_text reference "REF**" (at 0 {-hh - 4:.3f}) (layer "F.SilkS")')
+        lines.append('    (effects (font (size 1.2 1.2) (thickness 0.2)))')
+        lines.append('  )')
         
-        # Main board outline with rounded corners (using arcs)
-        # Four corners and four sides
-        hw, hh = w/2, h/2
+        # Value text
+        lines.append(f'  (fp_text value "{board.name}" (at 0 {hh + 4:.3f}) (layer "F.Fab")')
+        lines.append('    (effects (font (size 1.2 1.2) (thickness 0.2)))')
+        lines.append('  )')
+
+        # --- Sexy rounded outlines (silk + fab) ---
+        r = max(1.0, min(3.0, w * 0.08, h * 0.08))
+        inv_sqrt2 = 1.0 / math.sqrt(2.0)
+
+        def add_round_rect(layer: str, stroke_w: float, inset_mm: float = 0.0, stroke_type: str = "solid"):
+            hw2 = hw - inset_mm
+            hh2 = hh - inset_mm
+            rr = max(0.5, min(r - inset_mm, hw2, hh2))
+            if hw2 <= rr or hh2 <= rr:
+                return
+
+            # Edge segments
+            lines.append(
+                f'  (fp_line (start {-hw2 + rr:.3f} {-hh2:.3f}) (end {hw2 - rr:.3f} {-hh2:.3f})'
+                f' (stroke (width {stroke_w:.3f}) (type {stroke_type})) (layer "{layer}"))'
+            )
+            lines.append(
+                f'  (fp_line (start {hw2:.3f} {-hh2 + rr:.3f}) (end {hw2:.3f} {hh2 - rr:.3f})'
+                f' (stroke (width {stroke_w:.3f}) (type {stroke_type})) (layer "{layer}"))'
+            )
+            lines.append(
+                f'  (fp_line (start {hw2 - rr:.3f} {hh2:.3f}) (end {-hw2 + rr:.3f} {hh2:.3f})'
+                f' (stroke (width {stroke_w:.3f}) (type {stroke_type})) (layer "{layer}"))'
+            )
+            lines.append(
+                f'  (fp_line (start {-hw2:.3f} {hh2 - rr:.3f}) (end {-hw2:.3f} {-hh2 + rr:.3f})'
+                f' (stroke (width {stroke_w:.3f}) (type {stroke_type})) (layer "{layer}"))'
+            )
+
+            # Corner arcs (quarter circles)
+            # TL
+            cx, cy = -hw2 + rr, -hh2 + rr
+            mx, my = cx - rr * inv_sqrt2, cy - rr * inv_sqrt2
+            lines.append(
+                f'  (fp_arc (start {cx:.3f} {-hh2:.3f}) (mid {mx:.3f} {my:.3f}) (end {-hw2:.3f} {cy:.3f})'
+                f' (stroke (width {stroke_w:.3f}) (type {stroke_type})) (layer "{layer}"))'
+            )
+            # TR
+            cx, cy = hw2 - rr, -hh2 + rr
+            mx, my = cx + rr * inv_sqrt2, cy - rr * inv_sqrt2
+            lines.append(
+                f'  (fp_arc (start {hw2:.3f} {cy:.3f}) (mid {mx:.3f} {my:.3f}) (end {cx:.3f} {-hh2:.3f})'
+                f' (stroke (width {stroke_w:.3f}) (type {stroke_type})) (layer "{layer}"))'
+            )
+            # BR
+            cx, cy = hw2 - rr, hh2 - rr
+            mx, my = cx + rr * inv_sqrt2, cy + rr * inv_sqrt2
+            lines.append(
+                f'  (fp_arc (start {cx:.3f} {hh2:.3f}) (mid {mx:.3f} {my:.3f}) (end {hw2:.3f} {cy:.3f})'
+                f' (stroke (width {stroke_w:.3f}) (type {stroke_type})) (layer "{layer}"))'
+            )
+            # BL
+            cx, cy = -hw2 + rr, hh2 - rr
+            mx, my = cx - rr * inv_sqrt2, cy + rr * inv_sqrt2
+            lines.append(
+                f'  (fp_arc (start {-hw2:.3f} {cy:.3f}) (mid {mx:.3f} {my:.3f}) (end {cx:.3f} {hh2:.3f})'
+                f' (stroke (width {stroke_w:.3f}) (type {stroke_type})) (layer "{layer}"))'
+            )
+
+        # Outer rounded outline (silk)
+        add_round_rect("F.SilkS", stroke_w=0.32, inset_mm=0.0, stroke_type="solid")
+        # Inner dashed accent (silk)
+        add_round_rect("F.SilkS", stroke_w=0.14, inset_mm=1.8, stroke_type="dash")
+        # Fab outline (fab)
+        add_round_rect("F.Fab", stroke_w=0.12, inset_mm=0.0, stroke_type="solid")
+
+        # Pin-1 marker triangle (top-left)
+        tri = 2.2
+        px = -hw + 1.2
+        py = -hh + 1.2
+        lines.append(
+            '  (fp_poly (pts '
+            f'(xy {px:.3f} {py:.3f}) '
+            f'(xy {px + tri:.3f} {py:.3f}) '
+            f'(xy {px:.3f} {py + tri:.3f})'
+            f') (stroke (width 0) (type solid)) (fill solid) (layer "F.SilkS"))'
+        )
+
+        # Board name in center - simple text without knockout
+        lines.append(f'  (fp_text user "{board.name}" (at 0 0) (layer "F.SilkS")')
+        lines.append('    (effects (font (size 2.5 2.5) (thickness 0.4) (bold yes)))')
+        lines.append('  )')
+
+        # Courtyard 
+        lines.append(f'  (fp_rect (start {-hw - 1:.3f} {-hh - 1:.3f}) (end {hw + 1:.3f} {hh + 1:.3f})')
+        lines.append('    (stroke (width 0.05) (type solid)) (fill none) (layer "F.CrtYd")')
+        lines.append('  )')
         
-        # Top-left corner arc
-        lines.append(f'  (fp_arc (start {-hw + corner_r:.2f} {-hh:.2f}) (mid {-hw + corner_r*0.293:.2f} {-hh + corner_r*0.293:.2f}) (end {-hw:.2f} {-hh + corner_r:.2f})')
-        lines.append('    (stroke (width 0.3) (type solid)) (layer "F.SilkS"))')
+        # Fab layer outline with name
+        lines.append(f'  (fp_rect (start {-hw:.3f} {-hh:.3f}) (end {hw:.3f} {hh:.3f})')
+        lines.append('    (stroke (width 0.1) (type solid)) (fill none) (layer "F.Fab")')
+        lines.append('  )')
+        lines.append(f'  (fp_text user "${{REFERENCE}}" (at 0 0) (layer "F.Fab")')
+        lines.append('    (effects (font (size 1.5 1.5) (thickness 0.2)))')
+        lines.append('  )')
         
-        # Top-right corner arc
-        lines.append(f'  (fp_arc (start {hw:.2f} {-hh + corner_r:.2f}) (mid {hw - corner_r*0.293:.2f} {-hh + corner_r*0.293:.2f}) (end {hw - corner_r:.2f} {-hh:.2f})')
-        lines.append('    (stroke (width 0.3) (type solid)) (layer "F.SilkS"))')
-        
-        # Bottom-right corner arc
-        lines.append(f'  (fp_arc (start {hw - corner_r:.2f} {hh:.2f}) (mid {hw - corner_r*0.293:.2f} {hh - corner_r*0.293:.2f}) (end {hw:.2f} {hh - corner_r:.2f})')
-        lines.append('    (stroke (width 0.3) (type solid)) (layer "F.SilkS"))')
-        
-        # Bottom-left corner arc
-        lines.append(f'  (fp_arc (start {-hw:.2f} {hh - corner_r:.2f}) (mid {-hw + corner_r*0.293:.2f} {hh - corner_r*0.293:.2f}) (end {-hw + corner_r:.2f} {hh:.2f})')
-        lines.append('    (stroke (width 0.3) (type solid)) (layer "F.SilkS"))')
-        
-        # Straight edges between corners
-        lines.append(f'  (fp_line (start {-hw + corner_r:.2f} {-hh:.2f}) (end {hw - corner_r:.2f} {-hh:.2f}) (stroke (width 0.3) (type solid)) (layer "F.SilkS"))')
-        lines.append(f'  (fp_line (start {hw:.2f} {-hh + corner_r:.2f}) (end {hw:.2f} {hh - corner_r:.2f}) (stroke (width 0.3) (type solid)) (layer "F.SilkS"))')
-        lines.append(f'  (fp_line (start {hw - corner_r:.2f} {hh:.2f}) (end {-hw + corner_r:.2f} {hh:.2f}) (stroke (width 0.3) (type solid)) (layer "F.SilkS"))')
-        lines.append(f'  (fp_line (start {-hw:.2f} {hh - corner_r:.2f}) (end {-hw:.2f} {-hh + corner_r:.2f}) (stroke (width 0.3) (type solid)) (layer "F.SilkS"))')
-        
-        # Inner accent line (slightly inset)
-        inset = 1.5
-        lines.append(f'  (fp_rect (start {-hw + inset:.2f} {-hh + inset:.2f}) (end {hw - inset:.2f} {hh - inset:.2f})')
-        lines.append('    (stroke (width 0.15) (type default)) (fill none) (layer "F.SilkS"))')
-        
-        # Diagonal corner marks for visual interest
-        mark_len = min(5.0, w * 0.1, h * 0.1)
-        for cx, cy in [(-hw + inset, -hh + inset), (hw - inset, -hh + inset),
-                       (hw - inset, hh - inset), (-hw + inset, hh - inset)]:
-            dx = mark_len if cx < 0 else -mark_len
-            dy = mark_len if cy < 0 else -mark_len
-            lines.append(f'  (fp_line (start {cx:.2f} {cy:.2f}) (end {cx + dx:.2f} {cy:.2f}) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))')
-            lines.append(f'  (fp_line (start {cx:.2f} {cy:.2f}) (end {cx:.2f} {cy + dy:.2f}) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))')
-        
-        # Board name label background
-        label_w = min(len(board.name) * 2.5 + 4, w - 10)
-        label_h = 5
-        lines.append(f'  (fp_rect (start {-label_w/2:.2f} {-label_h/2:.2f}) (end {label_w/2:.2f} {label_h/2:.2f})')
-        lines.append('    (stroke (width 0.1) (type solid)) (fill solid) (layer "F.SilkS"))')
-        
-        # Board name text (inverted)
-        lines.append(f'  (fp_text user "{board.name}" (at 0 0) (layer "F.SilkS") (knockout)')
-        lines.append('    (effects (font (size 1.8 1.8) (thickness 0.25))))')
-        
-        # Courtyard
-        lines.append(f'  (fp_rect (start {-hw - 1:.2f} {-hh - 1:.2f}) (end {hw + 1:.2f} {hh + 1:.2f})')
-        lines.append('    (stroke (width 0.05) (type solid)) (fill none) (layer "F.CrtYd"))')
-        
-        # Fab layer outline
-        lines.append(f'  (fp_rect (start {-hw:.2f} {-hh:.2f}) (end {hw:.2f} {hh:.2f})')
-        lines.append('    (stroke (width 0.1) (type solid)) (fill none) (layer "F.Fab"))')
-        
-        # Port pads with enhanced visuals
-        pad_num = 1
+        # Port pads
         for port_name, port in sorted(board.ports.items()):
             x, y = self._calculate_port_position(port, w, h)
             rot = {"left": 180, "right": 0, "top": 270, "bottom": 90}.get(port.side, 0)
-            
-            # Main pad
-            lines.append(f'  (pad "{pad_num}" smd roundrect (at {x:.2f} {y:.2f} {rot}) (size 3 1.5)')
-            lines.append('    (layers "F.Cu" "F.Paste" "F.Mask") (roundrect_rratio 0.25))')
-            
+            pad_id = (port_name or "").strip() or "?"
+
+            # SMD pad for port
+            lines.append(f'  (pad "{pad_id}" smd roundrect (at {x:.3f} {y:.3f} {rot}) (size 3.6 1.7)')
+            lines.append('    (layers "F.Cu" "F.Paste" "F.Mask") (roundrect_rratio 0.28) (thermal_bridge_angle 45)')
+            lines.append(f'    (pinfunction "{port_name}") (pintype "passive")')
+            lines.append('  )')
+
             # Port label
-            label_offset_y = 2.5 if port.side in ("left", "right") else (-2.5 if port.side == "top" else 2.5)
-            label_rot = 90 if port.side in ("top", "bottom") else 0
-            lines.append(f'  (fp_text user "{port_name}" (at {x:.2f} {y + label_offset_y:.2f} {label_rot})')
-            lines.append('    (layer "F.SilkS") (effects (font (size 0.8 0.8) (thickness 0.12))))')
+            if port.side in ("left", "right"):
+                label_x = x + (4 if port.side == "left" else -4)
+                label_y = y
+                label_rot = 0
+            else:
+                label_x = x
+                label_y = y + (4 if port.side == "top" else -4)
+                label_rot = 90
             
-            # Direction arrow
-            arrow_len = 1.5
-            if port.side == "right":
-                ax, ay = x - 0.5, y
-                lines.append(f'  (fp_line (start {ax:.2f} {ay:.2f}) (end {ax - arrow_len:.2f} {ay - 0.5:.2f}) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))')
-                lines.append(f'  (fp_line (start {ax:.2f} {ay:.2f}) (end {ax - arrow_len:.2f} {ay + 0.5:.2f}) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))')
-            elif port.side == "left":
-                ax, ay = x + 0.5, y
-                lines.append(f'  (fp_line (start {ax:.2f} {ay:.2f}) (end {ax + arrow_len:.2f} {ay - 0.5:.2f}) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))')
-                lines.append(f'  (fp_line (start {ax:.2f} {ay:.2f}) (end {ax + arrow_len:.2f} {ay + 0.5:.2f}) (stroke (width 0.15) (type solid)) (layer "F.SilkS"))')
-            
-            pad_num += 1
-        
+            lines.append(f'  (fp_text user "{port_name}" (at {label_x:.3f} {label_y:.3f} {label_rot}) (layer "F.SilkS")')
+            lines.append('    (effects (font (size 1 1) (thickness 0.15)))')
+            lines.append('  )')
+
+            net_name = getattr(port, "net", "") or ""
+            if net_name and net_name != port_name:
+                lines.append(f'  (fp_text user "{net_name}" (at {label_x:.3f} {label_y + 1.4:.3f} {label_rot}) (layer "F.Fab")')
+                lines.append('    (effects (font (size 0.9 0.9) (thickness 0.12)))')
+                lines.append('  )')
+
         lines.append(')')
         
         fp_path = self.block_lib_path / f"{fp_name}.kicad_mod"
@@ -526,18 +592,35 @@ class MultiBoardManager:
         """Generate a port marker footprint."""
         self.port_lib_path.mkdir(parents=True, exist_ok=True)
         
-        fp_content = f'''(footprint "Port_{port_name}"
-  (version 20240108) (generator "multiboard") (layer "F.Cu")
-  (descr "Inter-board port: {port_name}")
-  (attr smd)
-  (fp_text reference "REF**" (at 0 -3) (layer "F.SilkS") (effects (font (size 0.8 0.8) (thickness 0.12))))
-  (fp_text value "PORT" (at 0 3) (layer "F.Fab") (effects (font (size 0.8 0.8) (thickness 0.12))))
-  (fp_text user "{port_name}" (at 0 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
-  (pad "1" smd roundrect (at 0 0) (size 2.5 2.5) (layers "F.Cu" "F.Paste" "F.Mask") (roundrect_rratio 0.2))
-  (fp_circle (center 0 0) (end 2 0) (stroke (width 0.2) (type solid)) (fill none) (layer "F.SilkS"))
-  (fp_circle (center 0 0) (end 1.5 0) (stroke (width 0.1) (type solid)) (fill none) (layer "F.SilkS"))
-)'''
-        (self.port_lib_path / f"Port_{port_name}.kicad_mod").write_text(fp_content, encoding="utf-8")
+        lines = [
+            f'(footprint "Port_{port_name}"',
+            '  (version 20240108)',
+            '  (generator "multiboard")',
+            '  (layer "F.Cu")',
+            f'  (descr "Inter-board port: {port_name}")',
+            '  (attr smd)',
+            '  (fp_text reference "REF**" (at 0 -4) (layer "F.SilkS")',
+            '    (effects (font (size 0.8 0.8) (thickness 0.12)))',
+            '  )',
+            '  (fp_text value "PORT" (at 0 4) (layer "F.Fab")',
+            '    (effects (font (size 0.8 0.8) (thickness 0.12)))',
+            '  )',
+            f'  (fp_text user "{port_name}" (at 0 0) (layer "F.SilkS")',
+            '    (effects (font (size 1 1) (thickness 0.15)))',
+            '  )',
+            '  (pad "1" smd roundrect (at 0 0) (size 2.5 2.5)',
+            '    (layers "F.Cu" "F.Paste" "F.Mask") (roundrect_rratio 0.2)',
+            '  )',
+            '  (fp_circle (center 0 0) (end 2 0)',
+            '    (stroke (width 0.2) (type solid)) (fill none) (layer "F.SilkS")',
+            '  )',
+            '  (fp_circle (center 0 0) (end 1.5 0)',
+            '    (stroke (width 0.1) (type solid)) (fill none) (layer "F.SilkS")',
+            '  )',
+            ')',
+        ]
+        
+        (self.port_lib_path / f"Port_{port_name}.kicad_mod").write_text('\n'.join(lines), encoding="utf-8")
         self._ensure_lib_in_table(PORT_LIB_NAME, f"{PORT_LIB_NAME}.pretty")
     
     # =========================================================================
@@ -755,7 +838,13 @@ class MultiBoardManager:
             failed_list = []
             new_footprints = []
             
-            for ref, info in to_add:
+            total_to_add = len(to_add)
+            for i, (ref, info) in enumerate(to_add):
+                # Update progress every 10 components
+                if progress_callback and i % 10 == 0 and total_to_add > 10:
+                    pct = 50 + int(30 * i / total_to_add)
+                    progress_callback(pct, f"Adding components ({i+1}/{total_to_add})...")
+                
                 lib, name = self._split_fpid(info["footprint"])
                 fp = self._fp_resolver.load(lib, name)
                 
@@ -973,68 +1062,29 @@ class MultiBoardManager:
     
     def _pack_footprints(self, board, footprints: List):
         """
-        Arrange new footprints in a grid layout.
+        Position new footprints for easy manual packing.
         
-        Places components in rows, sorted by size for efficient packing.
+        Places components in a simple grid near the origin.
+        User can then select all and press 'P' to use KiCad's 
+        native Pack and Move Footprints tool for optimal arrangement.
         """
         if not footprints:
             return
         
-        # Get board bounding box to find a good starting position
-        try:
-            # Find the rightmost existing component
-            max_x = 0
-            for fp in board.GetFootprints():
-                if fp not in footprints:
-                    bbox = fp.GetBoundingBox()
-                    max_x = max(max_x, bbox.GetRight())
-            
-            # Start position: to the right of existing components, or at origin
-            start_x = max(max_x + pcbnew.FromMM(20), pcbnew.FromMM(50))
-            start_y = pcbnew.FromMM(50)
-        except Exception:
-            start_x = pcbnew.FromMM(50)
-            start_y = pcbnew.FromMM(50)
+        # Simple grid placement - fast and reliable
+        grid_mm = PACK_GRID_SPACING
+        cols = min(PACK_MAX_PER_ROW, max(1, int(len(footprints) ** 0.5) + 1))
         
-        # Sort footprints by height for better packing
-        def get_height(fp):
-            try:
-                return fp.GetBoundingBox().GetHeight()
-            except Exception:
-                return 0
+        start_x = pcbnew.FromMM(50)
+        start_y = pcbnew.FromMM(50)
+        grid = pcbnew.FromMM(grid_mm)
         
-        footprints_sorted = sorted(footprints, key=get_height, reverse=True)
-        
-        # Pack into rows
-        grid_spacing = pcbnew.FromMM(PACK_GRID_SPACING)
-        current_x = start_x
-        current_y = start_y
-        row_height = 0
-        items_in_row = 0
-        
-        for fp in footprints_sorted:
-            try:
-                bbox = fp.GetBoundingBox()
-                fp_width = bbox.GetWidth()
-                fp_height = bbox.GetHeight()
-                
-                # Check if we need to start a new row
-                if items_in_row >= PACK_MAX_PER_ROW:
-                    current_x = start_x
-                    current_y += row_height + grid_spacing
-                    row_height = 0
-                    items_in_row = 0
-                
-                # Position the footprint
-                fp.SetPosition(pcbnew.VECTOR2I(int(current_x + fp_width // 2), int(current_y + fp_height // 2)))
-                
-                # Update position for next footprint
-                current_x += fp_width + grid_spacing
-                row_height = max(row_height, fp_height)
-                items_in_row += 1
-                
-            except Exception:
-                pass
+        for i, fp in enumerate(footprints):
+            col = i % cols
+            row = i // cols
+            x = start_x + col * grid
+            y = start_y + row * grid
+            fp.SetPosition(pcbnew.VECTOR2I(int(x), int(y)))
     
     # =========================================================================
     # Status
