@@ -2,14 +2,12 @@
 Multi-Board PCB Manager - Professional UI Components
 =====================================================
 
-This module provides all wxPython dialog classes with a professional,
-Altium-inspired design language:
-
-- Clean visual hierarchy
-- Consistent spacing and alignment  
-- Informative tooltips
-- Status feedback
-- Intuitive workflow
+Production-quality wxPython dialogs with:
+- Centered positioning
+- Consistent sizing
+- Professional styling
+- Keyboard navigation
+- Complete tooltips
 
 Author: Eliot
 License: MIT
@@ -21,7 +19,7 @@ import os
 import subprocess
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Set, Dict, Any, List, Tuple
+from typing import Optional, Set, Dict, Any
 
 from .config import BoardConfig, PortDef
 from .manager import MultiBoardManager
@@ -29,33 +27,88 @@ from .constants import BOARDS_DIR
 
 
 # =============================================================================
-# Design Constants
+# Design System
 # =============================================================================
 
 class Colors:
-    """Professional gray theme color palette."""
+    """Professional color palette."""
     BACKGROUND = wx.Colour(245, 246, 247)
     PANEL_BG = wx.Colour(255, 255, 255)
-    HEADER_BG = wx.Colour(55, 71, 79)
+    HEADER_BG = wx.Colour(38, 50, 56)
     HEADER_FG = wx.Colour(255, 255, 255)
-    ACCENT = wx.Colour(33, 150, 243)
-    ACCENT_HOVER = wx.Colour(25, 118, 210)
+    ACCENT = wx.Colour(30, 136, 229)
     BORDER = wx.Colour(218, 220, 224)
     TEXT_PRIMARY = wx.Colour(32, 33, 36)
     TEXT_SECONDARY = wx.Colour(95, 99, 104)
-    SUCCESS = wx.Colour(52, 168, 83)
-    WARNING = wx.Colour(251, 188, 4)
-    ERROR = wx.Colour(234, 67, 53)
-    INFO_BG = wx.Colour(232, 245, 253)
-    INFO_BORDER = wx.Colour(144, 202, 249)
+    SUCCESS = wx.Colour(67, 160, 71)
+    WARNING = wx.Colour(251, 140, 0)
+    ERROR = wx.Colour(229, 57, 53)
+    INFO_BG = wx.Colour(227, 242, 253)
+    SELECTED = wx.Colour(232, 240, 254)
 
 
 class Spacing:
     """Consistent spacing values."""
-    MARGIN = 16
-    PADDING = 12
-    GAP = 8
-    BUTTON_GAP = 6
+    XS = 4
+    SM = 8
+    MD = 12
+    LG = 16
+    XL = 24
+
+
+class Fonts:
+    """Font configurations."""
+    
+    @staticmethod
+    def header():
+        return wx.Font(15, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+    
+    @staticmethod
+    def title():
+        return wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD)
+    
+    @staticmethod
+    def body():
+        return wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+    
+    @staticmethod
+    def small():
+        return wx.Font(9, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+    
+    @staticmethod
+    def mono():
+        return wx.Font(9, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL)
+
+
+# =============================================================================
+# Base Dialog
+# =============================================================================
+
+class BaseDialog(wx.Dialog):
+    """Base dialog with common functionality."""
+    
+    def __init__(self, parent, title, size, **kwargs):
+        # Ensure minimum size
+        min_w, min_h = kwargs.pop('min_size', (400, 300))
+        size = (max(size[0], min_w), max(size[1], min_h))
+        
+        style = kwargs.pop('style', wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        super().__init__(parent, title=title, size=size, style=style, **kwargs)
+        
+        self.SetMinSize((min_w, min_h))
+        self.SetBackgroundColour(Colors.PANEL_BG)
+        
+        # Center on screen or parent
+        self.CentreOnScreen() if parent is None else self.CentreOnParent()
+        
+        # Escape key closes dialog
+        self.Bind(wx.EVT_CHAR_HOOK, self._on_char)
+    
+    def _on_char(self, event):
+        if event.GetKeyCode() == wx.WXK_ESCAPE:
+            self.EndModal(wx.ID_CANCEL)
+        else:
+            event.Skip()
 
 
 # =============================================================================
@@ -63,19 +116,11 @@ class Spacing:
 # =============================================================================
 
 class IconButton(wx.Button):
-    """Button with icon prefix using Unicode symbols."""
+    """Button with Unicode icon prefix."""
     
     ICONS = {
-        'new': '+',
-        'delete': '×',
-        'open': '↗',
-        'refresh': '↻',
-        'ports': '⇌',
-        'check': '✓',
-        'status': '≡',
-        'settings': '⚙',
-        'info': 'i',
-        'folder': '▤',
+        'new': '+', 'delete': '×', 'open': '↗', 'refresh': '↻',
+        'ports': '⇆', 'check': '✓', 'status': '☰', 'edit': '✎',
     }
     
     def __init__(self, parent, label, icon=None, **kwargs):
@@ -84,41 +129,39 @@ class IconButton(wx.Button):
         super().__init__(parent, label=label, **kwargs)
 
 
-class InfoPanel(wx.Panel):
-    """Informational banner with icon and message."""
+class InfoBanner(wx.Panel):
+    """Information banner with icon."""
     
     def __init__(self, parent, message, style='info'):
         super().__init__(parent)
         
-        if style == 'info':
-            bg = Colors.INFO_BG
-            icon = 'ⓘ'
-        elif style == 'warning':
-            bg = wx.Colour(255, 248, 225)
-            icon = '⚠'
-        else:
-            bg = Colors.INFO_BG
-            icon = 'ⓘ'
+        colors = {
+            'info': (Colors.INFO_BG, Colors.ACCENT, 'ⓘ'),
+            'warning': (wx.Colour(255, 243, 224), Colors.WARNING, '⚠'),
+            'success': (wx.Colour(232, 245, 233), Colors.SUCCESS, '✓'),
+        }
+        bg, fg, icon = colors.get(style, colors['info'])
         
         self.SetBackgroundColour(bg)
         
         sizer = wx.BoxSizer(wx.HORIZONTAL)
         
         icon_text = wx.StaticText(self, label=icon)
-        icon_text.SetFont(wx.Font(11, wx.FONTFAMILY_DEFAULT, 
-                                   wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-        sizer.Add(icon_text, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
+        icon_text.SetForegroundColour(fg)
+        icon_text.SetFont(Fonts.title())
+        sizer.Add(icon_text, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, Spacing.MD)
         
         msg_text = wx.StaticText(self, label=message)
         msg_text.SetForegroundColour(Colors.TEXT_PRIMARY)
-        msg_text.Wrap(500)
-        sizer.Add(msg_text, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 10)
+        msg_text.SetFont(Fonts.body())
+        msg_text.Wrap(600)
+        sizer.Add(msg_text, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, Spacing.MD)
         
         self.SetSizer(sizer)
 
 
 class SectionHeader(wx.Panel):
-    """Section header with title and optional subtitle."""
+    """Section header with title and subtitle."""
     
     def __init__(self, parent, title, subtitle=None):
         super().__init__(parent)
@@ -127,23 +170,21 @@ class SectionHeader(wx.Panel):
         sizer = wx.BoxSizer(wx.VERTICAL)
         
         title_text = wx.StaticText(self, label=title)
-        title_text.SetFont(wx.Font(11, wx.FONTFAMILY_DEFAULT,
-                                    wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        title_text.SetFont(Fonts.title())
         title_text.SetForegroundColour(Colors.TEXT_PRIMARY)
-        sizer.Add(title_text, 0, wx.BOTTOM, 2)
+        sizer.Add(title_text, 0, wx.BOTTOM, Spacing.XS)
         
         if subtitle:
             sub_text = wx.StaticText(self, label=subtitle)
-            sub_text.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT,
-                                      wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+            sub_text.SetFont(Fonts.small())
             sub_text.SetForegroundColour(Colors.TEXT_SECONDARY)
             sizer.Add(sub_text, 0)
         
         self.SetSizer(sizer)
 
 
-class StatusBar(wx.Panel):
-    """Status bar showing sync status."""
+class StatusIndicator(wx.Panel):
+    """Status bar with icon and message."""
     
     def __init__(self, parent):
         super().__init__(parent)
@@ -151,28 +192,22 @@ class StatusBar(wx.Panel):
         
         sizer = wx.BoxSizer(wx.HORIZONTAL)
         
-        self.status_icon = wx.StaticText(self, label="●")
-        self.status_icon.SetForegroundColour(Colors.SUCCESS)
-        sizer.Add(self.status_icon, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 4)
+        self.icon = wx.StaticText(self, label="●")
+        self.icon.SetForegroundColour(Colors.SUCCESS)
+        sizer.Add(self.icon, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, Spacing.XS)
         
-        self.status_text = wx.StaticText(self, label="Ready")
-        self.status_text.SetForegroundColour(Colors.TEXT_SECONDARY)
-        self.status_text.SetFont(wx.Font(9, wx.FONTFAMILY_DEFAULT,
-                                          wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-        sizer.Add(self.status_text, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, 4)
+        self.text = wx.StaticText(self, label="Ready")
+        self.text.SetFont(Fonts.small())
+        self.text.SetForegroundColour(Colors.TEXT_SECONDARY)
+        sizer.Add(self.text, 1, wx.ALL | wx.ALIGN_CENTER_VERTICAL, Spacing.XS)
         
         self.SetSizer(sizer)
     
     def set_status(self, message, status='ok'):
-        """Update status display."""
-        colors = {
-            'ok': Colors.SUCCESS,
-            'warning': Colors.WARNING,
-            'error': Colors.ERROR,
-            'working': Colors.ACCENT,
-        }
-        self.status_icon.SetForegroundColour(colors.get(status, Colors.SUCCESS))
-        self.status_text.SetLabel(message)
+        colors = {'ok': Colors.SUCCESS, 'warning': Colors.WARNING,
+                  'error': Colors.ERROR, 'working': Colors.ACCENT}
+        self.icon.SetForegroundColour(colors.get(status, Colors.SUCCESS))
+        self.text.SetLabel(message)
         self.Refresh()
 
 
@@ -180,45 +215,36 @@ class StatusBar(wx.Panel):
 # Progress Dialog
 # =============================================================================
 
-class ProgressDialog(wx.Dialog):
-    """Professional progress dialog."""
+class ProgressDialog(BaseDialog):
+    """Progress indicator dialog."""
     
-    def __init__(self, parent, title: str = "Working..."):
-        super().__init__(
-            parent,
-            title=title,
-            size=(450, 130),
-            style=wx.CAPTION | wx.STAY_ON_TOP
-        )
-        
-        self.SetBackgroundColour(Colors.PANEL_BG)
+    def __init__(self, parent, title="Working..."):
+        super().__init__(parent, title, size=(500, 200), min_size=(400, 130),
+                         style=wx.CAPTION | wx.STAY_ON_TOP)
         
         panel = wx.Panel(self)
         panel.SetBackgroundColour(Colors.PANEL_BG)
         sizer = wx.BoxSizer(wx.VERTICAL)
         
         self.label = wx.StaticText(panel, label="Initializing...")
-        self.label.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT,
-                                    wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
-        self.label.SetForegroundColour(Colors.TEXT_PRIMARY)
-        sizer.Add(self.label, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+        self.label.SetFont(Fonts.body())
+        sizer.Add(self.label, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
-        self.gauge = wx.Gauge(panel, range=100, size=(-1, 6))
-        sizer.Add(self.gauge, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 
-                  Spacing.MARGIN)
+        self.gauge = wx.Gauge(panel, range=100, size=(-1, 8))
+        sizer.Add(self.gauge, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.LG)
         
-        self.percent_label = wx.StaticText(panel, label="0%")
-        self.percent_label.SetForegroundColour(Colors.TEXT_SECONDARY)
-        sizer.Add(self.percent_label, 0, wx.LEFT | wx.BOTTOM, Spacing.MARGIN)
+        self.percent = wx.StaticText(panel, label="0%")
+        self.percent.SetFont(Fonts.small())
+        self.percent.SetForegroundColour(Colors.TEXT_SECONDARY)
+        sizer.Add(self.percent, 0, wx.ALL, Spacing.LG)
         
         panel.SetSizer(sizer)
-        self.Centre()
+        self.CentreOnParent() if parent else self.CentreOnScreen()
     
     def update(self, percent: int, message: str):
-        """Update progress display."""
         self.gauge.SetValue(min(percent, 100))
         self.label.SetLabel(message)
-        self.percent_label.SetLabel(f"{percent}%")
+        self.percent.SetLabel(f"{percent}%")
         wx.Yield()
 
 
@@ -226,21 +252,16 @@ class ProgressDialog(wx.Dialog):
 # Port Dialogs
 # =============================================================================
 
-class PortEditDialog(wx.Dialog):
-    """Port configuration dialog."""
+class PortEditDialog(BaseDialog):
+    """Port configuration editor."""
     
     def __init__(self, parent, port: PortDef, existing_names: Set[str] = None):
-        super().__init__(
-            parent,
-            title="Port Configuration",
-            size=(400, 300),
-            style=wx.DEFAULT_DIALOG_STYLE
-        )
+        super().__init__(parent, "Port Configuration", size=(480, 340), min_size=(420, 300))
+        
         self.port = port
         self.existing_names = existing_names or set()
         self.original_name = port.name
         
-        self.SetBackgroundColour(Colors.PANEL_BG)
         self._build_ui()
     
     def _build_ui(self):
@@ -248,81 +269,84 @@ class PortEditDialog(wx.Dialog):
         panel.SetBackgroundColour(Colors.PANEL_BG)
         main = wx.BoxSizer(wx.VERTICAL)
         
-        header = SectionHeader(panel, "Port Settings",
-                                "Define an inter-board connection point")
-        main.Add(header, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+        header = SectionHeader(panel, "Port Settings", "Define an inter-board connection point")
+        main.Add(header, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
-        form = wx.FlexGridSizer(4, 2, Spacing.GAP, Spacing.MARGIN)
+        form = wx.FlexGridSizer(4, 2, Spacing.SM, Spacing.LG)
         form.AddGrowableCol(1)
         
         # Name
-        form.Add(self._label(panel, "Name"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_name = wx.TextCtrl(panel, value=self.port.name)
+        form.Add(self._label(panel, "Port Name"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.txt_name = wx.TextCtrl(panel, value=self.port.name, size=(240, -1))
         self.txt_name.SetToolTip("Unique identifier (e.g., USB_DP, POWER_IN)")
         form.Add(self.txt_name, 1, wx.EXPAND)
         
         # Net
-        form.Add(self._label(panel, "Net"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_net = wx.TextCtrl(panel, value=self.port.net)
-        self.txt_net.SetToolTip("Net name this port connects to")
+        form.Add(self._label(panel, "Net Name"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.txt_net = wx.TextCtrl(panel, value=self.port.net, size=(240, -1))
+        self.txt_net.SetToolTip("Schematic net this port connects to (e.g., +5V, USB_D+)")
         form.Add(self.txt_net, 1, wx.EXPAND)
         
         # Side
-        form.Add(self._label(panel, "Edge"), 0, wx.ALIGN_CENTER_VERTICAL)
+        form.Add(self._label(panel, "Board Edge"), 0, wx.ALIGN_CENTER_VERTICAL)
         self.choice_side = wx.Choice(panel, choices=["Left", "Right", "Top", "Bottom"])
         self.choice_side.SetStringSelection(self.port.side.capitalize())
-        self.choice_side.SetToolTip("Board edge where this port appears")
-        form.Add(self.choice_side, 1, wx.EXPAND)
+        self.choice_side.SetToolTip("Edge of the block footprint where this port appears")
+        form.Add(self.choice_side, 0)
         
         # Position
         form.Add(self._label(panel, "Position"), 0, wx.ALIGN_CENTER_VERTICAL)
         pos_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.slider_pos = wx.Slider(
-            panel, value=int(self.port.position * 100),
-            minValue=0, maxValue=100, size=(140, -1)
-        )
-        self.slider_pos.SetToolTip("Position along edge (0% = start, 100% = end)")
-        pos_sizer.Add(self.slider_pos, 1, wx.EXPAND | wx.RIGHT, Spacing.GAP)
-        self.pos_label = wx.StaticText(panel, label=f"{self.port.position:.0%}")
-        self.pos_label.SetMinSize((40, -1))
+        self.slider_pos = wx.Slider(panel, value=int(self.port.position * 100),
+                                     minValue=0, maxValue=100, size=(180, -1))
+        self.slider_pos.SetToolTip("Position along edge: 0% = start, 100% = end")
+        pos_sizer.Add(self.slider_pos, 1, wx.EXPAND | wx.RIGHT, Spacing.SM)
+        self.pos_label = wx.StaticText(panel, label=f"{int(self.port.position * 100)}%", size=(40, -1))
         pos_sizer.Add(self.pos_label, 0, wx.ALIGN_CENTER_VERTICAL)
         form.Add(pos_sizer, 1, wx.EXPAND)
         
-        self.slider_pos.Bind(wx.EVT_SLIDER, self._on_slider)
+        self.slider_pos.Bind(wx.EVT_SLIDER, lambda e: self.pos_label.SetLabel(f"{self.slider_pos.GetValue()}%"))
         
-        main.Add(form, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.MARGIN)
+        main.Add(form, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.LG)
         main.AddStretchSpacer()
         
-        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        btn_sizer.AddStretchSpacer()
-        btn_cancel = wx.Button(panel, wx.ID_CANCEL, "Cancel")
-        btn_sizer.Add(btn_cancel, 0, wx.RIGHT, Spacing.BUTTON_GAP)
-        btn_ok = wx.Button(panel, wx.ID_OK, "Save")
-        btn_ok.SetDefault()
-        btn_ok.Bind(wx.EVT_BUTTON, self._on_ok)
-        btn_sizer.Add(btn_ok, 0)
-        main.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+        # Buttons
+        btn_sizer = self._create_buttons(panel, "Save")
+        main.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
         panel.SetSizer(main)
+        self.txt_name.SetFocus()
     
     def _label(self, parent, text):
         lbl = wx.StaticText(parent, label=text)
+        lbl.SetFont(Fonts.body())
         lbl.SetForegroundColour(Colors.TEXT_SECONDARY)
         return lbl
     
-    def _on_slider(self, event):
-        self.pos_label.SetLabel(f"{self.slider_pos.GetValue()}%")
+    def _create_buttons(self, parent, ok_label="OK"):
+        sizer = wx.BoxSizer(wx.HORIZONTAL)
+        sizer.AddStretchSpacer()
+        
+        btn_cancel = wx.Button(parent, wx.ID_CANCEL, "Cancel")
+        sizer.Add(btn_cancel, 0, wx.RIGHT, Spacing.SM)
+        
+        btn_ok = wx.Button(parent, wx.ID_OK, ok_label)
+        btn_ok.SetDefault()
+        btn_ok.Bind(wx.EVT_BUTTON, self._on_ok)
+        sizer.Add(btn_ok, 0)
+        
+        return sizer
     
     def _on_ok(self, event):
         name = self.txt_name.GetValue().strip()
         
         if not name:
-            wx.MessageBox("Port name is required.", "Validation Error", wx.ICON_WARNING)
+            wx.MessageBox("Port name is required.", "Validation", wx.ICON_WARNING)
             self.txt_name.SetFocus()
             return
         
         if name != self.original_name and name in self.existing_names:
-            wx.MessageBox(f"Port '{name}' already exists.", "Validation Error", wx.ICON_WARNING)
+            wx.MessageBox(f"Port '{name}' already exists.", "Validation", wx.ICON_WARNING)
             self.txt_name.SetFocus()
             return
         
@@ -335,20 +359,15 @@ class PortEditDialog(wx.Dialog):
         self.EndModal(wx.ID_OK)
 
 
-class PortDialog(wx.Dialog):
+class PortDialog(BaseDialog):
     """Port manager dialog."""
     
     def __init__(self, parent, board: BoardConfig):
-        super().__init__(
-            parent,
-            title=f"Manage Ports — {board.name}",
-            size=(520, 400),
-            style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER
-        )
+        super().__init__(parent, f"Manage Ports — {board.name}",
+                         size=(600, 480), min_size=(520, 400))
+        
         self.board = board
         self.ports = dict(board.ports)
-        
-        self.SetBackgroundColour(Colors.PANEL_BG)
         self._build_ui()
         self._refresh_list()
     
@@ -358,43 +377,53 @@ class PortDialog(wx.Dialog):
         main = wx.BoxSizer(wx.VERTICAL)
         
         header = SectionHeader(panel, "Inter-Board Ports",
-                                "Define connection points between boards")
-        main.Add(header, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+                                "Define electrical connection points between boards")
+        main.Add(header, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
+        # List
         self.list = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SIMPLE)
-        self.list.InsertColumn(0, "Port Name", width=130)
-        self.list.InsertColumn(1, "Connected Net", width=130)
-        self.list.InsertColumn(2, "Edge", width=70)
-        self.list.InsertColumn(3, "Position", width=70)
+        self.list.InsertColumn(0, "Port Name", width=150)
+        self.list.InsertColumn(1, "Connected Net", width=150)
+        self.list.InsertColumn(2, "Edge", width=80)
+        self.list.InsertColumn(3, "Position", width=80)
         self.list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, lambda e: self._on_edit(e))
-        main.Add(self.list, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.MARGIN)
+        main.Add(self.list, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.LG)
         
+        # Actions
         action_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        btn_add = IconButton(panel, "Add Port", icon='new', size=(90, -1))
-        btn_add.SetToolTip("Create a new port")
+        
+        btn_add = IconButton(panel, "Add Port", icon='new', size=(100, 32))
+        btn_add.SetToolTip("Create a new inter-board port")
         btn_add.Bind(wx.EVT_BUTTON, self._on_add)
-        action_sizer.Add(btn_add, 0, wx.RIGHT, Spacing.BUTTON_GAP)
+        action_sizer.Add(btn_add, 0, wx.RIGHT, Spacing.SM)
         
-        btn_edit = wx.Button(panel, label="Edit", size=(60, -1))
+        btn_edit = IconButton(panel, "Edit", icon='edit', size=(80, 32))
+        btn_edit.SetToolTip("Edit selected port (or double-click)")
         btn_edit.Bind(wx.EVT_BUTTON, self._on_edit)
-        action_sizer.Add(btn_edit, 0, wx.RIGHT, Spacing.BUTTON_GAP)
+        action_sizer.Add(btn_edit, 0, wx.RIGHT, Spacing.SM)
         
-        btn_remove = IconButton(panel, "Remove", icon='delete', size=(80, -1))
+        btn_remove = IconButton(panel, "Remove", icon='delete', size=(90, 32))
+        btn_remove.SetToolTip("Delete selected port")
         btn_remove.Bind(wx.EVT_BUTTON, self._on_remove)
         action_sizer.Add(btn_remove, 0)
-        main.Add(action_sizer, 0, wx.ALL, Spacing.MARGIN)
         
-        main.Add(wx.StaticLine(panel), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, Spacing.MARGIN)
+        main.Add(action_sizer, 0, wx.ALL, Spacing.LG)
         
+        main.Add(wx.StaticLine(panel), 0, wx.EXPAND | wx.LEFT | wx.RIGHT, Spacing.LG)
+        
+        # Dialog buttons
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
         btn_sizer.AddStretchSpacer()
+        
         btn_cancel = wx.Button(panel, wx.ID_CANCEL, "Cancel")
-        btn_sizer.Add(btn_cancel, 0, wx.RIGHT, Spacing.BUTTON_GAP)
-        btn_ok = wx.Button(panel, wx.ID_OK, "Apply")
+        btn_sizer.Add(btn_cancel, 0, wx.RIGHT, Spacing.SM)
+        
+        btn_ok = wx.Button(panel, wx.ID_OK, "Apply Changes")
         btn_ok.SetDefault()
         btn_ok.Bind(wx.EVT_BUTTON, self._on_ok)
         btn_sizer.Add(btn_ok, 0)
-        main.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+        
+        main.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
         panel.SetSizer(main)
     
@@ -437,7 +466,7 @@ class PortDialog(wx.Dialog):
         name = self._get_selected_name()
         if not name:
             return
-        if wx.MessageBox(f"Remove port '{name}'?", "Confirm",
+        if wx.MessageBox(f"Remove port '{name}'?", "Confirm Removal",
                          wx.YES_NO | wx.NO_DEFAULT | wx.ICON_QUESTION) == wx.YES:
             del self.ports[name]
             self._refresh_list()
@@ -451,17 +480,15 @@ class PortDialog(wx.Dialog):
 # New Board Dialog
 # =============================================================================
 
-class NewBoardDialog(wx.Dialog):
+class NewBoardDialog(BaseDialog):
     """New board creation dialog."""
     
     def __init__(self, parent, existing_names: Set[str]):
-        super().__init__(parent, title="Create New Board", size=(420, 260),
-                         style=wx.DEFAULT_DIALOG_STYLE)
+        super().__init__(parent, "Create New Board", size=(550, 500), min_size=(450, 280))
+        
         self.existing = existing_names
         self.result_name = ""
         self.result_desc = ""
-        
-        self.SetBackgroundColour(Colors.PANEL_BG)
         self._build_ui()
     
     def _build_ui(self):
@@ -470,44 +497,53 @@ class NewBoardDialog(wx.Dialog):
         main = wx.BoxSizer(wx.VERTICAL)
         
         header = SectionHeader(panel, "New Sub-Board",
-                                "Create a new PCB sharing this schematic")
-        main.Add(header, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+                                "Create a PCB that shares this project's schematic")
+        main.Add(header, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
-        form = wx.FlexGridSizer(2, 2, Spacing.GAP, Spacing.MARGIN)
+        form = wx.FlexGridSizer(2, 2, Spacing.SM, Spacing.LG)
         form.AddGrowableCol(1)
         
+        # Name
         lbl_name = wx.StaticText(panel, label="Board Name")
+        lbl_name.SetFont(Fonts.body())
         lbl_name.SetForegroundColour(Colors.TEXT_SECONDARY)
         form.Add(lbl_name, 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_name = wx.TextCtrl(panel)
-        self.txt_name.SetToolTip("Unique name (e.g., PowerSupply, MainBoard)")
+        
+        self.txt_name = wx.TextCtrl(panel, size=(280, -1))
+        self.txt_name.SetToolTip("Unique name for this board (e.g., PowerSupply, MainBoard)")
         form.Add(self.txt_name, 1, wx.EXPAND)
         
+        # Description
         lbl_desc = wx.StaticText(panel, label="Description")
+        lbl_desc.SetFont(Fonts.body())
         lbl_desc.SetForegroundColour(Colors.TEXT_SECONDARY)
-        form.Add(lbl_desc, 0, wx.ALIGN_TOP)
-        self.txt_desc = wx.TextCtrl(panel, size=(-1, 50), style=wx.TE_MULTILINE)
-        self.txt_desc.SetToolTip("Optional description")
+        form.Add(lbl_desc, 0, wx.ALIGN_TOP | wx.TOP, 4)
+        
+        self.txt_desc = wx.TextCtrl(panel, size=(280, 60), style=wx.TE_MULTILINE)
+        self.txt_desc.SetToolTip("Optional: describe this board's purpose")
         form.Add(self.txt_desc, 1, wx.EXPAND)
         
-        main.Add(form, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.MARGIN)
+        main.Add(form, 0, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.LG)
         
-        info = InfoPanel(panel,
-            "The new board shares the project schematic. "
-            "Use Update to assign components.", style='info')
-        main.Add(info, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+        info = InfoBanner(panel, "The new board will share the project schematic. \n"
+                                  "Use Update to assign components to this board.", style='info')
+        main.Add(info, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
         main.AddStretchSpacer()
         
+        # Buttons
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
         btn_sizer.AddStretchSpacer()
+        
         btn_cancel = wx.Button(panel, wx.ID_CANCEL, "Cancel")
-        btn_sizer.Add(btn_cancel, 0, wx.RIGHT, Spacing.BUTTON_GAP)
+        btn_sizer.Add(btn_cancel, 0, wx.RIGHT, Spacing.SM)
+        
         btn_ok = wx.Button(panel, wx.ID_OK, "Create Board")
         btn_ok.SetDefault()
         btn_ok.Bind(wx.EVT_BUTTON, self._on_ok)
         btn_sizer.Add(btn_ok, 0)
-        main.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+        
+        main.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
         panel.SetSizer(main)
         self.txt_name.SetFocus()
@@ -516,18 +552,19 @@ class NewBoardDialog(wx.Dialog):
         name = self.txt_name.GetValue().strip()
         
         if not name:
-            wx.MessageBox("Enter a board name.", "Validation Error", wx.ICON_WARNING)
+            wx.MessageBox("Please enter a board name.", "Validation", wx.ICON_WARNING)
             self.txt_name.SetFocus()
             return
         
         if name in self.existing:
-            wx.MessageBox(f"Board '{name}' already exists.", "Validation Error", wx.ICON_WARNING)
+            wx.MessageBox(f"Board '{name}' already exists.", "Validation", wx.ICON_WARNING)
             self.txt_name.SetFocus()
             return
         
-        safe_name = "".join(c if c.isalnum() or c in "_-" else "" for c in name)
-        if not safe_name:
-            wx.MessageBox("Name must contain letters or numbers.", "Validation Error", wx.ICON_WARNING)
+        safe = "".join(c if c.isalnum() or c in "_-" else "" for c in name)
+        if not safe:
+            wx.MessageBox("Name must contain at least one letter or number.",
+                          "Validation", wx.ICON_WARNING)
             self.txt_name.SetFocus()
             return
         
@@ -540,14 +577,13 @@ class NewBoardDialog(wx.Dialog):
 # Report Dialogs
 # =============================================================================
 
-class ConnectivityReportDialog(wx.Dialog):
-    """Connectivity report dialog."""
+class ConnectivityReportDialog(BaseDialog):
+    """DRC and connectivity report."""
     
     def __init__(self, parent, report: Dict[str, Any]):
-        super().__init__(parent, title="Connectivity Report", size=(600, 480),
-                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        super().__init__(parent, "Connectivity Report", size=(700, 550), min_size=(600, 450))
+        
         self.report = report
-        self.SetBackgroundColour(Colors.PANEL_BG)
         self._build_ui()
     
     def _build_ui(self):
@@ -559,35 +595,42 @@ class ConnectivityReportDialog(wx.Dialog):
         boards = self.report.get("boards", {})
         total_violations = sum(b.get("violations", 0) for b in boards.values())
         
+        # Status header
         if total_violations == 0 and len(errors) == 0:
-            status_color, status_icon = Colors.SUCCESS, "✓"
-            status_text = "All checks passed"
+            status_color, icon, title = Colors.SUCCESS, "✓", "All Checks Passed"
         elif len(errors) > 0:
-            status_color, status_icon = Colors.ERROR, "✕"
-            status_text = f"{len(errors)} error(s)"
+            status_color, icon, title = Colors.ERROR, "✕", f"{len(errors)} Error(s)"
         else:
-            status_color, status_icon = Colors.WARNING, "⚠"
-            status_text = f"{total_violations} violation(s)"
+            status_color, icon, title = Colors.WARNING, "⚠", f"{total_violations} Violation(s)"
         
         header_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        icon = wx.StaticText(panel, label=status_icon)
-        icon.SetFont(wx.Font(16, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        icon.SetForegroundColour(status_color)
-        header_sizer.Add(icon, 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, 8)
         
-        title = wx.StaticText(panel, label=status_text)
-        title.SetFont(wx.Font(12, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        header_sizer.Add(title, 0, wx.ALIGN_CENTER_VERTICAL)
-        main.Add(header_sizer, 0, wx.ALL, Spacing.MARGIN)
+        icon_text = wx.StaticText(panel, label=icon)
+        icon_text.SetFont(wx.Font(24, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        icon_text.SetForegroundColour(status_color)
+        header_sizer.Add(icon_text, 0, wx.RIGHT | wx.ALIGN_CENTER_VERTICAL, Spacing.MD)
         
+        title_text = wx.StaticText(panel, label=title)
+        title_text.SetFont(Fonts.header())
+        title_text.SetForegroundColour(Colors.TEXT_PRIMARY)
+        header_sizer.Add(title_text, 0, wx.ALIGN_CENTER_VERTICAL)
+        
+        main.Add(header_sizer, 0, wx.ALL, Spacing.LG)
+        
+        # Stats
         stats = wx.StaticText(panel,
-            label=f"Boards: {len(boards)}  •  Violations: {total_violations}  •  Errors: {len(errors)}")
+            label=f"Boards checked: {len(boards)}  •  "
+                  f"DRC violations: {total_violations}  •  "
+                  f"Errors: {len(errors)}")
+        stats.SetFont(Fonts.body())
         stats.SetForegroundColour(Colors.TEXT_SECONDARY)
-        main.Add(stats, 0, wx.LEFT | wx.RIGHT, Spacing.MARGIN)
-        main.AddSpacer(Spacing.MARGIN)
+        main.Add(stats, 0, wx.LEFT | wx.RIGHT, Spacing.LG)
         
+        main.AddSpacer(Spacing.LG)
+        
+        # Details
         self.text = wx.TextCtrl(panel, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.BORDER_SIMPLE)
-        self.text.SetFont(wx.Font(9, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        self.text.SetFont(Fonts.mono())
         self.text.SetBackgroundColour(wx.Colour(250, 250, 250))
         
         lines = []
@@ -596,7 +639,9 @@ class ConnectivityReportDialog(wx.Dialog):
             icon = "✓" if count == 0 else "⚠"
             lines.append(f"{icon} {board_name}: {count} violation(s)")
             for v in data.get("details", []):
-                lines.append(f"    • {v.get('type', 'unknown')}: {v.get('description', '')[:60]}")
+                vtype = v.get('type', 'unknown')
+                desc = v.get('description', '')[:70]
+                lines.append(f"    • {vtype}: {desc}")
             lines.append("")
         
         if errors:
@@ -605,27 +650,27 @@ class ConnectivityReportDialog(wx.Dialog):
                 lines.append(f"✕ {e}")
         
         self.text.SetValue("\n".join(lines) if lines else "No issues found.")
-        main.Add(self.text, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.MARGIN)
+        main.Add(self.text, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.LG)
         
+        # Close
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
         btn_sizer.AddStretchSpacer()
         btn_close = wx.Button(panel, wx.ID_CLOSE, "Close")
         btn_close.SetDefault()
         btn_close.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CLOSE))
         btn_sizer.Add(btn_close, 0)
-        main.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+        main.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
         panel.SetSizer(main)
 
 
-class StatusDialog(wx.Dialog):
-    """Component placement status dialog."""
+class StatusDialog(BaseDialog):
+    """Component placement status."""
     
     def __init__(self, parent, manager: MultiBoardManager):
-        super().__init__(parent, title="Component Status", size=(540, 420),
-                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        super().__init__(parent, "Component Status", size=(640, 500), min_size=(550, 400))
+        
         self.manager = manager
-        self.SetBackgroundColour(Colors.PANEL_BG)
         self._build_ui()
         wx.CallAfter(self._load_data)
     
@@ -635,10 +680,10 @@ class StatusDialog(wx.Dialog):
         main = wx.BoxSizer(wx.VERTICAL)
         
         self.header = SectionHeader(panel, "Component Placement", "Loading...")
-        main.Add(self.header, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+        main.Add(self.header, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
         self.tree = wx.TreeCtrl(panel, style=wx.TR_DEFAULT_STYLE | wx.TR_HIDE_ROOT | wx.BORDER_SIMPLE)
-        main.Add(self.tree, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.MARGIN)
+        main.Add(self.tree, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.LG)
         
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
         btn_sizer.AddStretchSpacer()
@@ -646,25 +691,31 @@ class StatusDialog(wx.Dialog):
         btn_close.SetDefault()
         btn_close.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CLOSE))
         btn_sizer.Add(btn_close, 0)
-        main.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+        main.Add(btn_sizer, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
         panel.SetSizer(main)
     
     def _load_data(self):
         placed, unplaced, total = self.manager.get_status()
         
+        # Update header
         self.header.DestroyChildren()
         sizer = wx.BoxSizer(wx.VERTICAL)
+        
         title = wx.StaticText(self.header, label="Component Placement")
-        title.SetFont(wx.Font(11, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        sizer.Add(title, 0, wx.BOTTOM, 4)
+        title.SetFont(Fonts.title())
+        sizer.Add(title, 0, wx.BOTTOM, Spacing.XS)
+        
         subtitle = wx.StaticText(self.header,
             label=f"Total: {total}  •  Placed: {len(placed)}  •  Unplaced: {len(unplaced)}")
+        subtitle.SetFont(Fonts.small())
         subtitle.SetForegroundColour(Colors.TEXT_SECONDARY)
         sizer.Add(subtitle, 0)
+        
         self.header.SetSizer(sizer)
         self.header.Layout()
         
+        # Populate tree
         self.tree.DeleteAllItems()
         root = self.tree.AddRoot("Status")
         
@@ -674,18 +725,18 @@ class StatusDialog(wx.Dialog):
         
         for board_name in sorted(by_board.keys()):
             refs = sorted(by_board[board_name])
-            node = self.tree.AppendItem(root, f"✓ {board_name} ({len(refs)})")
-            for ref in refs[:50]:
-                self.tree.AppendItem(node, f"  {ref}")
-            if len(refs) > 50:
-                self.tree.AppendItem(node, f"  ... +{len(refs) - 50} more")
+            node = self.tree.AppendItem(root, f"✓ {board_name} ({len(refs)} components)")
+            for ref in refs[:100]:
+                self.tree.AppendItem(node, f"    {ref}")
+            if len(refs) > 100:
+                self.tree.AppendItem(node, f"    ... +{len(refs) - 100} more")
         
         if unplaced:
-            node = self.tree.AppendItem(root, f"○ Unplaced ({len(unplaced)})")
-            for ref in sorted(unplaced)[:50]:
-                self.tree.AppendItem(node, f"  {ref}")
-            if len(unplaced) > 50:
-                self.tree.AppendItem(node, f"  ... +{len(unplaced) - 50} more")
+            node = self.tree.AppendItem(root, f"○ Unplaced ({len(unplaced)} components)")
+            for ref in sorted(unplaced)[:100]:
+                self.tree.AppendItem(node, f"    {ref}")
+            if len(unplaced) > 100:
+                self.tree.AppendItem(node, f"    ... +{len(unplaced) - 100} more")
         
         self.tree.ExpandAll()
 
@@ -694,21 +745,20 @@ class StatusDialog(wx.Dialog):
 # Main Dialog
 # =============================================================================
 
-class MainDialog(wx.Dialog):
-    """
-    Primary plugin dialog with professional design.
-    """
+class MainDialog(BaseDialog):
+    """Primary plugin dialog."""
     
     def __init__(self, parent, pcb_board: "pcbnew.BOARD"):
-        super().__init__(parent, title="Multi-Board Manager", size=(760, 540),
-                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
-        
+        # Initialize before super().__init__ to get project name for title
         pcb_path = pcb_board.GetFileName()
         project_dir = Path(pcb_path).parent if pcb_path else Path.cwd()
         self.manager = MultiBoardManager(project_dir)
+        
+        super().__init__(parent, "Multi-Board Manager",
+                         size=(1200, 800), min_size=(800, 550))
+        
         self.executor = ThreadPoolExecutor(max_workers=1)
         
-        self.SetBackgroundColour(Colors.BACKGROUND)
         self._build_ui()
         self._refresh_list()
         
@@ -717,113 +767,141 @@ class MainDialog(wx.Dialog):
     def _build_ui(self):
         main = wx.BoxSizer(wx.VERTICAL)
         
+        # ─────────────────────────────────────────────────────────────────────
         # Header
+        # ─────────────────────────────────────────────────────────────────────
         header = wx.Panel(self)
         header.SetBackgroundColour(Colors.HEADER_BG)
         header_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
         title_sizer = wx.BoxSizer(wx.VERTICAL)
+        
         title = wx.StaticText(header, label="Multi-Board Manager")
-        title.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        title.SetFont(Fonts.header())
         title.SetForegroundColour(Colors.HEADER_FG)
-        title_sizer.Add(title, 0, wx.BOTTOM, 2)
+        title_sizer.Add(title, 0, wx.BOTTOM, Spacing.XS)
         
         subtitle = wx.StaticText(header, label=f"Project: {self.manager.project_dir.name}")
+        subtitle.SetFont(Fonts.body())
         subtitle.SetForegroundColour(wx.Colour(176, 190, 197))
         title_sizer.Add(subtitle, 0)
-        header_sizer.Add(title_sizer, 1, wx.ALL, Spacing.MARGIN)
         
-        board_count = len(self.manager.config.boards)
-        badge = wx.StaticText(header, label=f"{board_count} board(s)")
-        badge.SetForegroundColour(wx.Colour(176, 190, 197))
-        header_sizer.Add(badge, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, Spacing.MARGIN)
+        header_sizer.Add(title_sizer, 1, wx.ALL, Spacing.LG)
+        
+        self.board_count_badge = wx.StaticText(header, label="0 boards")
+        self.board_count_badge.SetFont(Fonts.body())
+        self.board_count_badge.SetForegroundColour(wx.Colour(176, 190, 197))
+        header_sizer.Add(self.board_count_badge, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, Spacing.LG)
         
         header.SetSizer(header_sizer)
         main.Add(header, 0, wx.EXPAND)
         
+        # ─────────────────────────────────────────────────────────────────────
         # Content
+        # ─────────────────────────────────────────────────────────────────────
         content = wx.Panel(self)
         content.SetBackgroundColour(Colors.PANEL_BG)
         content_sizer = wx.BoxSizer(wx.VERTICAL)
         
-        info = InfoPanel(content,
-            "All boards share the same schematic. Edits anywhere are reflected everywhere.",
+        info = InfoBanner(content,
+            "All boards share the same schematic. Edits made anywhere are instantly reflected everywhere.",
             style='info')
-        content_sizer.Add(info, 0, wx.ALL | wx.EXPAND, Spacing.MARGIN)
+        content_sizer.Add(info, 0, wx.ALL | wx.EXPAND, Spacing.LG)
         
         # Board list
         self.list = wx.ListCtrl(content, style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SIMPLE)
-        self.list.InsertColumn(0, "Board", width=120)
-        self.list.InsertColumn(1, "Components", width=85)
-        self.list.InsertColumn(2, "Ports", width=55)
-        self.list.InsertColumn(3, "Description", width=180)
-        self.list.InsertColumn(4, "Path", width=200)
+        self.list.SetFont(Fonts.body())
+        
+        self.list.InsertColumn(0, "Board", width=140)
+        self.list.InsertColumn(1, "Components", width=100)
+        self.list.InsertColumn(2, "Ports", width=70)
+        self.list.InsertColumn(3, "Description", width=220)
+        self.list.InsertColumn(4, "Path", width=260)
+        
         self.list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_open)
         self.list.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_selection_changed)
         self.list.Bind(wx.EVT_LIST_ITEM_DESELECTED, self._on_selection_changed)
-        content_sizer.Add(self.list, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.MARGIN)
         
-        # Buttons
-        btn_panel = wx.Panel(content)
-        btn_panel.SetBackgroundColour(Colors.PANEL_BG)
-        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        content_sizer.Add(self.list, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.LG)
         
-        btn_new = IconButton(btn_panel, "New", icon='new', size=(70, 30))
-        btn_new.SetToolTip("Create a new sub-board")
+        # ─────────────────────────────────────────────────────────────────────
+        # Toolbar
+        # ─────────────────────────────────────────────────────────────────────
+        toolbar = wx.Panel(content)
+        toolbar.SetBackgroundColour(Colors.PANEL_BG)
+        tb_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
+        # Board management
+        btn_new = IconButton(toolbar, "New", icon='new', size=(80, 34))
+        btn_new.SetToolTip("Create a new sub-board (shares project schematic)")
         btn_new.Bind(wx.EVT_BUTTON, self._on_new)
-        btn_sizer.Add(btn_new, 0, wx.RIGHT, Spacing.BUTTON_GAP)
+        tb_sizer.Add(btn_new, 0, wx.RIGHT, Spacing.SM)
         
-        self.btn_remove = IconButton(btn_panel, "Remove", icon='delete', size=(85, 30))
-        self.btn_remove.SetToolTip("Delete selected board")
+        self.btn_remove = IconButton(toolbar, "Remove", icon='delete', size=(95, 34))
+        self.btn_remove.SetToolTip("Delete the selected board and its files")
         self.btn_remove.Bind(wx.EVT_BUTTON, self._on_remove)
         self.btn_remove.Disable()
-        btn_sizer.Add(self.btn_remove, 0, wx.RIGHT, Spacing.MARGIN)
+        tb_sizer.Add(self.btn_remove, 0, wx.RIGHT, Spacing.LG)
         
-        self.btn_open = IconButton(btn_panel, "Open", icon='open', size=(70, 30))
-        self.btn_open.SetToolTip("Open board in KiCad")
+        # Separator
+        tb_sizer.Add(wx.StaticLine(toolbar, style=wx.LI_VERTICAL), 0,
+                     wx.EXPAND | wx.TOP | wx.BOTTOM | wx.RIGHT, Spacing.SM)
+        tb_sizer.AddSpacer(Spacing.SM)
+        
+        # Board actions
+        self.btn_open = IconButton(toolbar, "Open", icon='open', size=(80, 34))
+        self.btn_open.SetToolTip("Open board project in KiCad (double-click also works)")
         self.btn_open.Bind(wx.EVT_BUTTON, self._on_open)
         self.btn_open.Disable()
-        btn_sizer.Add(self.btn_open, 0, wx.RIGHT, Spacing.BUTTON_GAP)
+        tb_sizer.Add(self.btn_open, 0, wx.RIGHT, Spacing.SM)
         
-        self.btn_update = IconButton(btn_panel, "Update", icon='refresh', size=(85, 30))
-        self.btn_update.SetToolTip("Sync components from schematic")
+        self.btn_update = IconButton(toolbar, "Update", icon='refresh', size=(95, 34))
+        self.btn_update.SetToolTip("Sync components from schematic to this board")
         self.btn_update.Bind(wx.EVT_BUTTON, self._on_update)
         self.btn_update.Disable()
-        btn_sizer.Add(self.btn_update, 0, wx.RIGHT, Spacing.BUTTON_GAP)
+        tb_sizer.Add(self.btn_update, 0, wx.RIGHT, Spacing.SM)
         
-        self.btn_ports = IconButton(btn_panel, "Ports", icon='ports', size=(70, 30))
-        self.btn_ports.SetToolTip("Configure inter-board ports")
+        self.btn_ports = IconButton(toolbar, "Ports", icon='ports', size=(80, 34))
+        self.btn_ports.SetToolTip("Define inter-board connection ports")
         self.btn_ports.Bind(wx.EVT_BUTTON, self._on_ports)
         self.btn_ports.Disable()
-        btn_sizer.Add(self.btn_ports, 0, wx.RIGHT, Spacing.MARGIN)
+        tb_sizer.Add(self.btn_ports, 0, wx.RIGHT, Spacing.LG)
         
-        btn_check = IconButton(btn_panel, "Check All", icon='check', size=(95, 30))
-        btn_check.SetToolTip("Run DRC on all boards")
+        # Separator
+        tb_sizer.Add(wx.StaticLine(toolbar, style=wx.LI_VERTICAL), 0,
+                     wx.EXPAND | wx.TOP | wx.BOTTOM | wx.RIGHT, Spacing.SM)
+        tb_sizer.AddSpacer(Spacing.SM)
+        
+        # Global actions
+        btn_check = IconButton(toolbar, "Check All", icon='check', size=(105, 34))
+        btn_check.SetToolTip("Run DRC and connectivity checks on all boards")
         btn_check.Bind(wx.EVT_BUTTON, self._on_check)
-        btn_sizer.Add(btn_check, 0, wx.RIGHT, Spacing.BUTTON_GAP)
+        tb_sizer.Add(btn_check, 0, wx.RIGHT, Spacing.SM)
         
-        btn_status = IconButton(btn_panel, "Status", icon='status', size=(75, 30))
-        btn_status.SetToolTip("View component placement")
+        btn_status = IconButton(toolbar, "Status", icon='status', size=(85, 34))
+        btn_status.SetToolTip("View component placement status across all boards")
         btn_status.Bind(wx.EVT_BUTTON, self._on_status)
-        btn_sizer.Add(btn_status, 0)
+        tb_sizer.Add(btn_status, 0)
         
-        btn_panel.SetSizer(btn_sizer)
-        content_sizer.Add(btn_panel, 0, wx.ALL, Spacing.MARGIN)
+        toolbar.SetSizer(tb_sizer)
+        content_sizer.Add(toolbar, 0, wx.ALL, Spacing.LG)
         
         content.SetSizer(content_sizer)
         main.Add(content, 1, wx.EXPAND)
         
+        # ─────────────────────────────────────────────────────────────────────
         # Footer
+        # ─────────────────────────────────────────────────────────────────────
         footer = wx.Panel(self)
         footer.SetBackgroundColour(Colors.BACKGROUND)
         footer_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
-        self.status_bar = StatusBar(footer)
-        footer_sizer.Add(self.status_bar, 1, wx.ALL | wx.EXPAND, 4)
+        self.status_bar = StatusIndicator(footer)
+        footer_sizer.Add(self.status_bar, 1, wx.ALL | wx.EXPAND, Spacing.XS)
         
-        btn_close = wx.Button(footer, label="Close", size=(75, 30))
+        btn_close = wx.Button(footer, label="Close", size=(90, 34))
         btn_close.Bind(wx.EVT_BUTTON, lambda e: self.Close())
-        footer_sizer.Add(btn_close, 0, wx.ALL, 8)
+        footer_sizer.Add(btn_close, 0, wx.ALL, Spacing.SM)
         
         footer.SetSizer(footer_sizer)
         main.Add(footer, 0, wx.EXPAND)
@@ -833,7 +911,7 @@ class MainDialog(wx.Dialog):
     def _refresh_list(self):
         self.list.DeleteAllItems()
         
-        placed = self.manager.scan_all_boards()
+        placed = self.manager.scan_all_boards(force=True)
         counts: Dict[str, int] = {}
         for ref, (board, _) in placed.items():
             counts[board] = counts.get(board, 0) + 1
@@ -847,7 +925,9 @@ class MainDialog(wx.Dialog):
         
         total_boards = len(self.manager.config.boards)
         total_components = sum(counts.values())
-        self.status_bar.set_status(f"{total_boards} board(s), {total_components} component(s)", 'ok')
+        
+        self.board_count_badge.SetLabel(f"{total_boards} board(s)")
+        self.status_bar.set_status(f"{total_boards} board(s), {total_components} component(s) placed", 'ok')
         self._on_selection_changed(None)
     
     def _get_selected_name(self) -> Optional[str]:
@@ -866,11 +946,15 @@ class MainDialog(wx.Dialog):
         dlg = NewBoardDialog(self, existing)
         if dlg.ShowModal() == wx.ID_OK:
             self.status_bar.set_status("Creating board...", 'working')
+            wx.Yield()
+            
             success, msg = self.manager.create_board(dlg.result_name, dlg.result_desc)
             if success:
                 self.status_bar.set_status(f"Created '{dlg.result_name}'", 'ok')
-                wx.MessageBox(f"Board '{dlg.result_name}' created.\n\nUse Update to add components.",
-                              "Success", wx.ICON_INFORMATION)
+                wx.MessageBox(
+                    f"Board '{dlg.result_name}' created successfully.\n\n"
+                    "Use Update to assign and sync components from the schematic.",
+                    "Board Created", wx.ICON_INFORMATION)
                 self._refresh_list()
             else:
                 self.status_bar.set_status("Creation failed", 'error')
@@ -881,18 +965,25 @@ class MainDialog(wx.Dialog):
         name = self._get_selected_name()
         if not name:
             return
+        
         board = self.manager.config.boards.get(name)
         if not board:
             return
         
-        if wx.MessageBox(
-            f"Delete board '{name}'?\n\nThis removes the board folder and all files.\n"
-            "The shared schematic is NOT affected.",
-            "Confirm", wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING) != wx.YES:
+        result = wx.MessageBox(
+            f"Delete board '{name}'?\n\n"
+            "This will permanently remove:\n"
+            "  • The board folder and all files\n"
+            "  • All PCB layout work\n\n"
+            "The shared schematic will NOT be affected.",
+            "Confirm Deletion", wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING)
+        
+        if result != wx.YES:
             return
         
         pcb_path = self.manager.project_dir / board.pcb_path
         board_dir = pcb_path.parent
+        
         if board_dir.exists() and BOARDS_DIR in str(board_dir):
             try:
                 shutil.rmtree(board_dir)
@@ -901,28 +992,48 @@ class MainDialog(wx.Dialog):
         
         del self.manager.config.boards[name]
         self.manager.save_config()
+        
         self.status_bar.set_status(f"Removed '{name}'", 'ok')
         self._refresh_list()
     
     def _on_open(self, event):
+        """Open the board's KiCad project (not just PCB)."""
         name = self._get_selected_name()
         if not name:
             return
+        
         board = self.manager.config.boards.get(name)
         if not board:
             return
         
         pcb_path = self.manager.project_dir / board.pcb_path
-        if not pcb_path.exists():
-            wx.MessageBox(f"PCB not found:\n{pcb_path}", "Error", wx.ICON_ERROR)
+        pro_path = pcb_path.with_suffix(".kicad_pro")
+        
+        # Prefer opening the project file if it exists
+        target = pro_path if pro_path.exists() else pcb_path
+        
+        if not target.exists():
+            wx.MessageBox(f"File not found:\n{target}", "Error", wx.ICON_ERROR)
             return
         
         self.status_bar.set_status(f"Opening '{name}'...", 'working')
-        if os.name == "nt":
-            os.startfile(str(pcb_path))
-        else:
-            subprocess.Popen(["pcbnew", str(pcb_path)])
-        self.status_bar.set_status(f"Opened '{name}'", 'ok')
+        
+        try:
+            if os.name == "nt":
+                os.startfile(str(target))
+            elif os.uname().sysname == "Darwin":
+                subprocess.Popen(["open", str(target)])
+            else:
+                # Try kicad first, fall back to pcbnew
+                try:
+                    subprocess.Popen(["kicad", str(pro_path if pro_path.exists() else target)])
+                except FileNotFoundError:
+                    subprocess.Popen(["pcbnew", str(pcb_path)])
+            
+            self.status_bar.set_status(f"Opened '{name}'", 'ok')
+        except Exception as e:
+            self.status_bar.set_status("Open failed", 'error')
+            wx.MessageBox(f"Could not open project:\n{e}", "Error", wx.ICON_ERROR)
     
     def _on_update(self, event):
         name = self._get_selected_name()
@@ -943,10 +1054,10 @@ class MainDialog(wx.Dialog):
                 success, msg = future.result()
                 if success:
                     wx.CallAfter(lambda: self.status_bar.set_status(f"Updated '{name}'", 'ok'))
-                    wx.CallAfter(lambda: wx.MessageBox(f"Update complete:\n\n{msg}", "Done", wx.ICON_INFORMATION))
+                    wx.CallAfter(lambda: wx.MessageBox(f"Update complete:\n\n{msg}", "Success", wx.ICON_INFORMATION))
                 else:
                     wx.CallAfter(lambda: self.status_bar.set_status("Update failed", 'error'))
-                    wx.CallAfter(lambda: wx.MessageBox(msg, "Failed", wx.ICON_ERROR))
+                    wx.CallAfter(lambda: wx.MessageBox(msg, "Update Failed", wx.ICON_ERROR))
                 wx.CallAfter(self._refresh_list)
             except Exception as e:
                 wx.CallAfter(lambda: self.status_bar.set_status("Update failed", 'error'))
@@ -959,6 +1070,7 @@ class MainDialog(wx.Dialog):
         name = self._get_selected_name()
         if not name:
             return
+        
         board = self.manager.config.boards.get(name)
         if not board:
             return
@@ -972,6 +1084,10 @@ class MainDialog(wx.Dialog):
         dlg.Destroy()
     
     def _on_check(self, event):
+        if not self.manager.config.boards:
+            wx.MessageBox("No boards to check.", "Info", wx.ICON_INFORMATION)
+            return
+        
         progress = ProgressDialog(self, "Checking Connectivity")
         progress.Show()
         self.status_bar.set_status("Running checks...", 'working')
@@ -986,12 +1102,14 @@ class MainDialog(wx.Dialog):
                 report = future.result()
                 errors = len(report.get("errors", []))
                 violations = sum(b.get("violations", 0) for b in report.get("boards", {}).values())
+                
                 if errors == 0 and violations == 0:
                     status = ('All checks passed', 'ok')
                 elif errors > 0:
                     status = (f'{errors} error(s)', 'error')
                 else:
                     status = (f'{violations} violation(s)', 'warning')
+                
                 wx.CallAfter(lambda: self.status_bar.set_status(*status))
                 wx.CallAfter(lambda: ConnectivityReportDialog(self, report).ShowModal())
             except Exception as e:
