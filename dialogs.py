@@ -19,6 +19,9 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Optional, Set, Dict, Any
+from wx.lib.agw import ultimatelistctrl as ULC
+from wx.lib.wordwrap import wordwrap
+import wx.grid as gridlib
 
 import pcbnew
 
@@ -115,7 +118,6 @@ class BaseDialog(wx.Dialog):
 # =============================================================================
 # Custom Widgets
 # =============================================================================
-
 class IconButton(wx.Button):
     """Button with Unicode icon prefix."""
     
@@ -128,7 +130,6 @@ class IconButton(wx.Button):
         if icon and icon in self.ICONS:
             label = f"{self.ICONS[icon]} {label}"
         super().__init__(parent, label=label, **kwargs)
-
 
 class InfoBanner(wx.Panel):
     """Information banner with icon."""
@@ -160,7 +161,6 @@ class InfoBanner(wx.Panel):
         
         self.SetSizer(sizer)
 
-
 class SectionHeader(wx.Panel):
     """Section header with title and subtitle."""
     
@@ -182,7 +182,6 @@ class SectionHeader(wx.Panel):
             sizer.Add(sub_text, 0)
         
         self.SetSizer(sizer)
-
 
 class StatusIndicator(wx.Panel):
     """Status bar with icon and message."""
@@ -211,11 +210,9 @@ class StatusIndicator(wx.Panel):
         self.text.SetLabel(message)
         self.Refresh()
 
-
 # =============================================================================
 # Progress Dialog
 # =============================================================================
-
 class ProgressDialog(BaseDialog):
     """Progress indicator dialog."""
     
@@ -248,11 +245,9 @@ class ProgressDialog(BaseDialog):
         self.percent.SetLabel(f"{percent}%")
         wx.Yield()
 
-
 # =============================================================================
 # Port Dialogs
 # =============================================================================
-
 class PortEditDialog(BaseDialog):
     """Port configuration editor."""
     
@@ -358,8 +353,6 @@ class PortEditDialog(BaseDialog):
             position=self.slider_pos.GetValue() / 100.0,
         )
         self.EndModal(wx.ID_OK)
-
-
 class PortDialog(BaseDialog):
     """Port manager dialog."""
     
@@ -476,11 +469,9 @@ class PortDialog(BaseDialog):
         self.board.ports = self.ports
         self.EndModal(wx.ID_OK)
 
-
 # =============================================================================
 # New Board Dialog
 # =============================================================================
-
 class NewBoardDialog(BaseDialog):
     """New board creation dialog."""
     
@@ -573,11 +564,9 @@ class NewBoardDialog(BaseDialog):
         self.result_desc = self.txt_desc.GetValue().strip()
         self.EndModal(wx.ID_OK)
 
-
 # =============================================================================
 # Report Dialogs
 # =============================================================================
-
 class ConnectivityReportDialog(BaseDialog):
     """DRC and connectivity report."""
     
@@ -664,7 +653,6 @@ class ConnectivityReportDialog(BaseDialog):
         
         panel.SetSizer(main)
 
-
 class StatusDialog(BaseDialog):
     """Component placement status."""
     
@@ -741,11 +729,9 @@ class StatusDialog(BaseDialog):
         
         self.tree.ExpandAll()
 
-
 # =============================================================================
 # Main Dialog
 # =============================================================================
-
 class MainDialog(BaseDialog):
     """Primary plugin dialog."""
     
@@ -765,178 +751,218 @@ class MainDialog(BaseDialog):
     
     def _build_ui(self):
         main = wx.BoxSizer(wx.VERTICAL)
-        
+
         # ─────────────────────────────────────────────────────────────────────
         # Header
         # ─────────────────────────────────────────────────────────────────────
         header = wx.Panel(self)
         header.SetBackgroundColour(Colors.HEADER_BG)
         header_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        
+
         title_sizer = wx.BoxSizer(wx.VERTICAL)
-        
+
         title = wx.StaticText(header, label="Multi-Board Manager")
         title.SetFont(Fonts.header())
         title.SetForegroundColour(Colors.HEADER_FG)
         title_sizer.Add(title, 0, wx.BOTTOM, Spacing.XS)
-        
+
         subtitle = wx.StaticText(header, label=f"Project: {self.manager.project_dir.name}")
         subtitle.SetFont(Fonts.body())
         subtitle.SetForegroundColour(wx.Colour(176, 190, 197))
         title_sizer.Add(subtitle, 0)
-        
+
         header_sizer.Add(title_sizer, 1, wx.ALL, Spacing.LG)
-        
+
         self.board_count_badge = wx.StaticText(header, label="0 boards")
         self.board_count_badge.SetFont(Fonts.body())
         self.board_count_badge.SetForegroundColour(wx.Colour(176, 190, 197))
         header_sizer.Add(self.board_count_badge, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, Spacing.LG)
-        
+
         header.SetSizer(header_sizer)
         main.Add(header, 0, wx.EXPAND)
-        
+
         # ─────────────────────────────────────────────────────────────────────
         # Content
         # ─────────────────────────────────────────────────────────────────────
         content = wx.Panel(self)
         content.SetBackgroundColour(Colors.PANEL_BG)
         content_sizer = wx.BoxSizer(wx.VERTICAL)
-        
+
         info = InfoBanner(content,
             "All boards share the same schematic. Edits made anywhere are instantly reflected everywhere.",
             style='info')
         content_sizer.Add(info, 0, wx.ALL | wx.EXPAND, Spacing.LG)
-        
-        # Board list
-        self.list = wx.ListCtrl(content, style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SIMPLE)
-        self.list.SetFont(Fonts.body())
-        
-        self.list.InsertColumn(0, "Board", width=140)
-        self.list.InsertColumn(1, "Components", width=100)
-        self.list.InsertColumn(2, "Ports", width=70)
-        self.list.InsertColumn(3, "Description", width=220)
-        self.list.InsertColumn(4, "Path", width=260)
-        
-        self.list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self._on_open)
-        self.list.Bind(wx.EVT_LIST_ITEM_SELECTED, self._on_selection_changed)
-        self.list.Bind(wx.EVT_LIST_ITEM_DESELECTED, self._on_selection_changed)
-        
-        content_sizer.Add(self.list, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.LG)
-        
+
+        # Board table (Grid = real wrapping + auto row heights)
+        self.grid = gridlib.Grid(content)
+        self.grid.CreateGrid(0, 5)
+        self.grid.SetFont(Fonts.body())
+
+        self.grid.SetRowLabelSize(0)              # hide row labels
+        self.grid.EnableEditing(False)            # read-only
+        self.grid.EnableGridLines(True)
+        self.grid.SetSelectionMode(gridlib.Grid.SelectRows)
+
+        # Column labels
+        self.grid.SetColLabelValue(0, "Board")
+        self.grid.SetColLabelValue(1, "Components")
+        self.grid.SetColLabelValue(2, "Ports")
+        self.grid.SetColLabelValue(3, "Description")
+        self.grid.SetColLabelValue(4, "Path")
+
+        # Initial widths (you can still resize; rows will auto-resize)
+        self.grid.SetColSize(0, 140)
+        self.grid.SetColSize(1, 120)
+        self.grid.SetColSize(2, 70)
+        self.grid.SetColSize(3, 450)
+        self.grid.SetColSize(4, 300)
+
+        # Selection + open behavior
+        self.grid.Bind(gridlib.EVT_GRID_SELECT_CELL, self._on_grid_select)
+        self.grid.Bind(gridlib.EVT_GRID_CELL_LEFT_DCLICK, self._on_open)
+        self.grid.Bind(wx.EVT_SIZE, self._on_grid_size)
+
+        content_sizer.Add(self.grid, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, Spacing.LG)
+
         # ─────────────────────────────────────────────────────────────────────
         # Toolbar
         # ─────────────────────────────────────────────────────────────────────
         toolbar = wx.Panel(content)
         toolbar.SetBackgroundColour(Colors.PANEL_BG)
         tb_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        
+
         # Board management
         btn_new = IconButton(toolbar, "New", icon='new', size=(80, 34))
         btn_new.SetToolTip("Create a new sub-board (shares project schematic)")
         btn_new.Bind(wx.EVT_BUTTON, self._on_new)
         tb_sizer.Add(btn_new, 0, wx.RIGHT, Spacing.SM)
-        
+
         self.btn_remove = IconButton(toolbar, "Remove", icon='delete', size=(95, 34))
         self.btn_remove.SetToolTip("Delete the selected board and its files")
         self.btn_remove.Bind(wx.EVT_BUTTON, self._on_remove)
         self.btn_remove.Disable()
         tb_sizer.Add(self.btn_remove, 0, wx.RIGHT, Spacing.LG)
-        
+
         # Separator
         tb_sizer.Add(wx.StaticLine(toolbar, style=wx.LI_VERTICAL), 0,
-                     wx.EXPAND | wx.TOP | wx.BOTTOM | wx.RIGHT, Spacing.SM)
+                    wx.EXPAND | wx.TOP | wx.BOTTOM | wx.RIGHT, Spacing.SM)
         tb_sizer.AddSpacer(Spacing.SM)
-        
+
         # Board actions
         self.btn_open = IconButton(toolbar, "Open", icon='open', size=(80, 34))
         self.btn_open.SetToolTip("Open board project in KiCad (double-click also works)")
         self.btn_open.Bind(wx.EVT_BUTTON, self._on_open)
         self.btn_open.Disable()
         tb_sizer.Add(self.btn_open, 0, wx.RIGHT, Spacing.SM)
-        
+
         self.btn_update = IconButton(toolbar, "Update", icon='refresh', size=(95, 34))
         self.btn_update.SetToolTip("Sync components from schematic to this board")
         self.btn_update.Bind(wx.EVT_BUTTON, self._on_update)
         self.btn_update.Disable()
         tb_sizer.Add(self.btn_update, 0, wx.RIGHT, Spacing.SM)
-        
+
         self.btn_ports = IconButton(toolbar, "Ports", icon='ports', size=(80, 34))
         self.btn_ports.SetToolTip("Define inter-board connection ports")
         self.btn_ports.Bind(wx.EVT_BUTTON, self._on_ports)
         self.btn_ports.Disable()
-        tb_sizer.Add(self.btn_ports, 0, wx.RIGHT, Spacing.LG)
-        
+        tb_sizer.Add(self.btn_ports, 0, wx.RIGHT, Spacing.SM)
+
+        # NEW: edit description button
+        self.btn_edit_desc = IconButton(toolbar, "Description", icon='edit', size=(120, 34))
+        self.btn_edit_desc.SetToolTip("Edit the selected board description")
+        self.btn_edit_desc.Bind(wx.EVT_BUTTON, self._on_edit_description)
+        self.btn_edit_desc.Disable()
+        tb_sizer.Add(self.btn_edit_desc, 0, wx.RIGHT, Spacing.LG)
+
         # Separator
         tb_sizer.Add(wx.StaticLine(toolbar, style=wx.LI_VERTICAL), 0,
-                     wx.EXPAND | wx.TOP | wx.BOTTOM | wx.RIGHT, Spacing.SM)
+                    wx.EXPAND | wx.TOP | wx.BOTTOM | wx.RIGHT, Spacing.SM)
         tb_sizer.AddSpacer(Spacing.SM)
-        
+
         # Global actions
         btn_check = IconButton(toolbar, "Check All", icon='check', size=(105, 34))
         btn_check.SetToolTip("Run DRC and connectivity checks on all boards")
         btn_check.Bind(wx.EVT_BUTTON, self._on_check)
         tb_sizer.Add(btn_check, 0, wx.RIGHT, Spacing.SM)
-        
+
         btn_status = IconButton(toolbar, "Status", icon='status', size=(85, 34))
         btn_status.SetToolTip("View component placement status across all boards")
         btn_status.Bind(wx.EVT_BUTTON, self._on_status)
         tb_sizer.Add(btn_status, 0)
-        
+
         toolbar.SetSizer(tb_sizer)
         content_sizer.Add(toolbar, 0, wx.ALL, Spacing.LG)
-        
+
         content.SetSizer(content_sizer)
         main.Add(content, 1, wx.EXPAND)
-        
+
         # ─────────────────────────────────────────────────────────────────────
         # Footer
         # ─────────────────────────────────────────────────────────────────────
         footer = wx.Panel(self)
         footer.SetBackgroundColour(Colors.BACKGROUND)
         footer_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        
+
         self.status_bar = StatusIndicator(footer)
         footer_sizer.Add(self.status_bar, 1, wx.ALL | wx.EXPAND, Spacing.XS)
-        
+
         btn_close = wx.Button(footer, label="Close", size=(90, 34))
         btn_close.Bind(wx.EVT_BUTTON, lambda e: self.Close())
         footer_sizer.Add(btn_close, 0, wx.ALL, Spacing.SM)
-        
+
         footer.SetSizer(footer_sizer)
         main.Add(footer, 0, wx.EXPAND)
-        
+
         self.SetSizer(main)
-    
+
     def _refresh_list(self):
-        self.list.DeleteAllItems()
-        
+        # Clear all rows
+        if self.grid.GetNumberRows() > 0:
+            self.grid.DeleteRows(0, self.grid.GetNumberRows())
+
         placed = self.manager.scan_all_boards()
         counts: Dict[str, int] = {}
         for ref, (board, _) in placed.items():
             counts[board] = counts.get(board, 0) + 1
-        
-        # Determine current board (if we're in a sub-board)
+
         current_board = self._get_current_board_name()
-        
-        for name, board in self.manager.config.boards.items():
-            # Add indent marker if this is the current board
+
+        boards = list(self.manager.config.boards.items())
+        if boards:
+            self.grid.AppendRows(len(boards))
+
+        wrap_renderer = gridlib.GridCellAutoWrapStringRenderer()
+
+        for row, (name, board) in enumerate(boards):
             display_name = f"  → {name}" if name == current_board else name
-            
-            idx = self.list.InsertItem(self.list.GetItemCount(), display_name)
-            self.list.SetItem(idx, 1, str(counts.get(name, 0)))
-            self.list.SetItem(idx, 2, str(len(board.ports)))
-            self.list.SetItem(idx, 3, board.description or "—")
-            self.list.SetItem(idx, 4, board.pcb_path)
-            
+
+            self.grid.SetCellValue(row, 0, display_name)
+            self.grid.SetCellValue(row, 1, str(counts.get(name, 0)))
+            self.grid.SetCellValue(row, 2, str(len(board.ports)))
+            self.grid.SetCellValue(row, 3, board.description or "—")
+            self.grid.SetCellValue(row, 4, board.pcb_path or "")
+
+            # Wrap only the long-text columns
+            self.grid.SetCellRenderer(row, 3, wrap_renderer)
+            self.grid.SetCellRenderer(row, 4, wrap_renderer)
+
+            # Make every cell read-only (extra safety)
+            for col in range(5):
+                self.grid.SetReadOnly(row, col, True)
+
             # Highlight current board row
             if name == current_board:
-                self.list.SetItemBackgroundColour(idx, Colors.SELECTED)
-        
+                for col in range(5):
+                    self.grid.SetCellBackgroundColour(row, col, Colors.SELECTED)
+
+        # Recompute row heights based on current column widths and wrapped text
+        self._autosize_grid_rows()
+
         total_boards = len(self.manager.config.boards)
         total_components = sum(counts.values())
-        
         self.board_count_badge.SetLabel(f"{total_boards} board(s)")
         self.status_bar.set_status(f"{total_boards} board(s), {total_components} component(s) placed", 'ok')
+
         self._on_selection_changed(None)
     
     def _get_current_board_name(self) -> Optional[str]:
@@ -959,22 +985,75 @@ class MainDialog(BaseDialog):
         return None
     
     def _get_selected_name(self) -> Optional[str]:
-        idx = self.list.GetFirstSelected()
-        if idx < 0:
-            return None
-        name = self.list.GetItemText(idx)
-        # Remove indent marker if present (for current board highlighting)
+        rows = self.grid.GetSelectedRows()
+        if rows:
+            row = rows[0]
+        else:
+            row = self.grid.GetGridCursorRow()
+            if row < 0 or row >= self.grid.GetNumberRows():
+                return None
+
+        name = self.grid.GetCellValue(row, 0)
         if name.startswith("  → "):
             name = name[4:]
-        return name
-    
+        return name or None
+
     def _on_selection_changed(self, event):
-        has_sel = self.list.GetFirstSelected() >= 0
+        has_sel = bool(self.grid.GetSelectedRows()) or (0 <= self.grid.GetGridCursorRow() < self.grid.GetNumberRows())
         self.btn_remove.Enable(has_sel)
         self.btn_open.Enable(has_sel)
         self.btn_update.Enable(has_sel)
         self.btn_ports.Enable(has_sel)
+        self.btn_edit_desc.Enable(has_sel)
     
+    def _on_grid_select(self, event):
+        row = event.GetRow()
+        if row >= 0:
+            self.grid.SelectRow(row)
+        self._on_selection_changed(None)
+        event.Skip()
+
+    def _on_grid_size(self, event):
+        event.Skip()
+        wx.CallAfter(self._autosize_grid_rows)
+
+    def _autosize_grid_rows(self):
+        if not hasattr(self, "grid"):
+            return
+        if self.grid.GetNumberRows() <= 0:
+            return
+        # Auto-size rows based on wrapped content and current column widths
+        self.grid.AutoSizeRows()
+        self.grid.ForceRefresh()
+
+    def _on_edit_description(self, event):
+        name = self._get_selected_name()
+        if not name:
+            return
+
+        board = self.manager.config.boards.get(name)
+        if not board:
+            return
+
+        dlg = wx.TextEntryDialog(
+            self,
+            message=f"Edit description for '{name}':",
+            caption="Edit Board Description",
+            value=board.description or "",
+            style=wx.OK | wx.CANCEL | wx.TE_MULTILINE
+        )
+        try:
+            dlg.SetSize((560, 340))
+            if dlg.ShowModal() != wx.ID_OK:
+                return
+
+            board.description = dlg.GetValue().strip()
+            self.manager.save_config()
+            self.status_bar.set_status(f"Updated description for '{name}'", 'ok')
+            self._refresh_list()
+        finally:
+            dlg.Destroy()
+
     def _on_new(self, event):
         existing = set(self.manager.config.boards.keys())
         dlg = NewBoardDialog(self, existing)
@@ -1158,3 +1237,7 @@ class MainDialog(BaseDialog):
     
     def _on_close(self, event):
         self.Destroy()
+
+    def _on_begin_label_edit(self, event):
+        # This prevents the white in-place editor overlay from showing up
+        event.Veto()
