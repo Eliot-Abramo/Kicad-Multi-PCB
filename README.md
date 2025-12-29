@@ -1,103 +1,80 @@
-# Multi-Board PCB Manager
+# Multi-Board PCB Manager for KiCad
 
-A KiCad 9+ plugin for managing multiple PCBs from a single schematic.
+A professional KiCad plugin for managing multiple PCBs from a single schematic.
 
-## Overview
+## Version 11.0
 
-Design your complete system in one schematic, then split it across multiple PCBs. Each board gets independent layout, stackup, and manufacturing outputs while staying synchronized with the shared schematic.
+### Features
 
-## Features
+- **Unified Schematic**: All boards share the same schematic via hardlinks
+- **Component Assignment**: Assign components to specific boards
+- **Search & Filter**: Instant filtering of boards by name or description
+- **Context Menus**: Right-click for quick actions
+- **Health Reports**: One-click health check for all boards
+- **Board Comparison**: Diff view to compare component placement
+- **PCB Open Detection**: Prevents conflicts when boards are open in KiCad
+- **Inter-Board Ports**: Define connection points between boards
+- **Block Footprints**: Visual representation for assembly views
 
-- **Shared Schematic**: One schematic, multiple PCBs. Edit once, reflected everywhere.
-- **Component Assignment**: Place components on specific boards during update.
-- **Native Packing**: New components placed in grid; use KiCad's 'P' key to pack optimally.
-- **Inter-Board Ports**: Define and verify connections between boards.
-- **Block Footprints**: Visual board representations for assembly views.
-- **DRC Integration**: Run design checks across all boards.
-- **Hierarchy View**: See all boards from any sub-PCB with current board highlighted.
+### New in v11.0
 
-## Installation
+- **Search Box**: Filter boards instantly by name or description
+- **Context Menu**: Right-click on any board for quick actions
+- **Health Report**: Comprehensive health check with status indicators
+- **Diff View**: Compare components between two boards
+- **PCB Open Detection**: Shows which boards are open in KiCad
+  - Uses lock files (`.lck`) for cross-instance detection
+  - Prevents update/delete of open boards
+  - Visual indicator (◉) for open boards
+- **Open Boards Indicator**: Shows count of boards open in KiCad
 
-Copy the `multiboard_manager` folder to:
+### Keyboard Shortcuts
 
-| OS | Path |
-|---|---|
-| Windows | `%APPDATA%\kicad\9.0\scripting\plugins\` |
-| Linux | `~/.local/share/kicad/9.0/scripting/plugins/` |
-| macOS | `~/Library/Application Support/kicad/9.0/scripting/plugins/` |
+| Shortcut | Action |
+|----------|--------|
+| Ctrl+N | Create new board |
+| Ctrl+H | Health report |
+| Ctrl+F | Focus search box |
+| F5 | Update selected board (or refresh list) |
+| Enter | Open selected board |
+| Del | Delete selected board |
+| Esc | Close dialog |
 
-Restart KiCad. Access via **Tools → External Plugins → Multi-Board Manager**.
+### Installation
 
-## Quick Start
+1. Download `multiboard_manager.zip`
+2. Extract to your KiCad plugins directory:
+   - **Windows**: `%APPDATA%\kicad\9.0\scripting\plugins\`
+   - **Linux**: `~/.local/share/kicad/9.0/scripting/plugins/`
+   - **macOS**: `~/Library/Application Support/kicad/9.0/scripting/plugins/`
+3. Restart KiCad
+4. Access via **Tools → External Plugins → Multi-Board Manager**
 
-1. Open your main project PCB
-2. Launch Multi-Board Manager from External Plugins
-3. Click **New** to create a sub-board
-4. Double-click to open the board project in KiCad
-5. Click **Update** to sync components from the schematic
+### Requirements
 
-## How It Works
+- KiCad 9.0+
+- kicad-cli (included with KiCad)
 
-### Shared Schematic
+### Usage
 
-When you create a sub-board, the plugin creates a **hardlink** to your root schematic. Both paths point to the same physical file—edit either one, you're editing the same data.
+1. Open any PCB in your project
+2. Launch the Multi-Board Manager
+3. Create new boards with the **New** button
+4. Use **Update** to sync components from the schematic
+5. Define **Ports** for inter-board connections
+6. Use **Health** to check all boards
+7. Use **Compare** to diff two boards
 
-```
-project.kicad_sch          ──┬──► Same file on disk
-boards/PSU/PSU.kicad_sch   ──┘
-```
+### Status Indicators
 
-### Component Assignment
+| Status | Meaning |
+|--------|---------|
+| ✓ | Board is healthy |
+| → Current | Currently open in this KiCad instance |
+| ◉ Open | Open in another KiCad instance |
+| ⚠ | Warning (check health report) |
+| ✕ | Error (file missing or corrupt) |
 
-Components are assigned to boards implicitly:
+### License
 
-- Components already on a board stay there
-- Components marked `DNP` or `Exclude from Board` are skipped
-- Remaining components go to whichever board you Update first
-
-To move a component: delete it from the current board, then Update the target board.
-
-### Inter-Board Ports
-
-For systems with electrical connections between boards:
-
-1. Select a board → **Ports**
-2. Add ports for signals crossing board boundaries
-3. Set the net name each port connects to
-4. Run **Check All** to verify connectivity
-
-## Project Structure
-
-```
-MyProject/
-├── MyProject.kicad_sch        ← Root schematic (edit here)
-├── MyProject.kicad_pcb        ← Root PCB (optional assembly view)
-├── .kicad_multiboard.json     ← Plugin config
-├── MultiBoard_Blocks.pretty/  ← Generated block footprints
-│
-└── boards/
-    └── PowerSupply/
-        ├── PowerSupply.kicad_sch  ← Hardlink (same file as root)
-        ├── PowerSupply.kicad_pcb  ← Independent PCB
-        └── PowerSupply.kicad_pro
-```
-
-## Troubleshooting
-
-**kicad-cli not found**
-
-Ensure KiCad's bin directory is in your PATH, or the plugin will search standard installation locations.
-
-**Components not appearing**
-
-- Check for `DNP=Yes` or `Exclude from Board=Yes` properties
-- Component may already be on another board
-- Verify a footprint is assigned in the schematic
-
-**Schematic changes not visible in another window**
-
-If you have the same schematic open in two KiCad windows, each caches its own copy in memory. Close and reopen to see changes. This is standard application behavior.
-
-## License
-
-MIT
+MIT License - See LICENSE file
