@@ -135,6 +135,7 @@ class MultiBoardManager:
         
         # Cached scan results (invalidated on update)
         self._scan_cache: Optional[Dict[str, Tuple[str, str]]] = None
+        self._health_cache: Dict[str, dict] = {}
         
         self._detect_root_files()
         self._load_config()
@@ -739,6 +740,14 @@ class MultiBoardManager:
         if not pcb_path.exists():
             return False, f"PCB not found: {board.pcb_path}"
         
+        # Guard against updating a PCB that is currently open in KiCad.
+        # Updating while open can cause crashes or data loss, so we hard-block here.
+        if self.is_pcb_open(pcb_path):
+            return False, (
+                f"Board '{board_name}' appears to be open in KiCad (lock file present). \n"
+                "Close it first, then retry."
+            )
+
         try:
             # Step 1: Setup
             if progress_callback:
@@ -1089,7 +1098,6 @@ class MultiBoardManager:
     # =========================================================================
     # Status
     # =========================================================================
-    
     def get_status(self) -> Tuple[Dict[str, str], Set[str], int]:
         placed_raw = self.scan_all_boards()
         placed = {ref: board for ref, (board, _) in placed_raw.items()}
@@ -1106,3 +1114,163 @@ class MultiBoardManager:
         
         valid = {r for r, i in comps.items() if not i["skip"]}
         return placed, valid - set(placed.keys()), len(valid)
+
+    # =========================================================================
+    # Health Reports
+    # =========================================================================
+    def get_board_health(self, board_name: str, force: bool = False) -> dict:
+        """Get health status for a board."""
+        if not force and board_name in self._health_cache:
+            return self._health_cache[board_name]
+        
+        board = self.config.boards.get(board_name)
+        if not board:
+            return {"status": "error", "message": "Board not found"}
+
+        pcb_path = self.project_dir / board.pcb_path
+        health = {
+            "status": "ok",
+            "exists": pcb_path.exists(),
+            "components": 0,
+            "is_open": self.is_pcb_open(pcb_path),
+            "ports": len(board.ports),
+            "last_modified": None,
+        }
+
+        if not pcb_path.exists():
+            health["status"] = "error"
+            health["message"] = "PCB file missing"
+            return health
+
+        try:
+            health["last_modified"] = datetime.fromtimestamp(
+                pcb_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            pass
+
+        try:
+            pcb = pcbnew.LoadBoard(str(pcb_path))
+            health["components"] = len([fp for fp in pcb.GetFootprints()
+                                        if not fp.GetReference().startswith("#")])
+        except Exception as e:
+            health["status"] = "warning"
+            health["message"] = f"Load error: {e}"
+
+        self._health_cache[board_name] = health
+        return health
+
+    def get_full_health_report(self, progress_callback=None) -> Dict[str, Any]:
+        """Generate comprehensive health report for all boards."""
+        report = {
+            "timestamp": datetime.now().isoformat(),
+            "project": self.project_dir.name,
+            "total_boards": len(self.config.boards),
+            "boards": {},
+            "summary": {"ok": 0, "warning": 0, "error": 0},
+        }
+
+        total = len(self.config.boards)
+        for i, (name, board) in enumerate(self.config.boards.items()):
+            if progress_callback:
+                progress_callback(int(100 * i / max(total, 1)), f"Checking {name}...")
+            health = self.get_board_health(name, force=True)
+            report["boards"][name] = health
+            report["summary"][health["status"]] += 1
+
+        if progress_callback:
+            progress_callback(100, "Complete")
+        return report
+
+    def get_board_diff(self, board1: str, board2: str) -> dict:
+        """Compare two boards and return differences."""
+        diff = {
+            "board1": board1, "board2": board2,
+            "only_in_1": [], "only_in_2": [], "common": [],
+            "component_count": {board1: 0, board2: 0},
+        }
+
+        placed = self.scan_all_boards()
+        refs1 = {ref for ref, (b, _) in placed.items() if b == board1}
+        refs2 = {ref for ref, (b, _) in placed.items() if b == board2}
+
+        diff["only_in_1"] = sorted(refs1 - refs2)
+        diff["only_in_2"] = sorted(refs2 - refs1)
+        diff["common"] = sorted(refs1 & refs2)
+        diff["component_count"][board1] = len(refs1)
+        diff["component_count"][board2] = len(refs2)
+
+        return diff
+
+    # =========================================================================
+    # Open-board detection (KiCad lock files)
+    # =========================================================================
+    def _kicad_lock_paths(self, pcb_path: Path) -> List[Path]:
+        """Return possible KiCad lock-file paths for a given board file.
+
+        KiCad creates lock files next to the open file, e.g.:
+          ~board.kicad_pcb.lck
+          ~board.kicad_sch.lck
+
+        We also include a couple of legacy/common variants just in case.
+        """
+        pcb_path = Path(pcb_path)
+        name = pcb_path.name
+        parent = pcb_path.parent
+
+        return [
+            parent / f"~{name}.lck",            # KiCad 7+ (e.g., ~foo.kicad_pcb.lck)
+            parent / f".~lock.{name}#",         # legacy pattern (rare)
+            parent / f"{name}.lck",             # fallback (rare)
+        ]
+
+    def _is_open_in_this_instance(self, pcb_path: Path) -> bool:
+        """Best-effort check: is this *exact* board the active pcbnew board?"""
+        try:
+            b = pcbnew.GetBoard()
+            if not b:
+                return False
+            open_file = b.GetFileName() or ""
+            if not open_file:
+                return False
+            try:
+                return Path(open_file).resolve() == Path(pcb_path).resolve()
+            except Exception:
+                return Path(open_file).name == Path(pcb_path).name
+        except Exception:
+            return False
+
+    def is_pcb_open(self, pcb_path: Path) -> bool:
+        """True if the PCB looks open in *any* KiCad instance.
+
+        Works whether the board was opened via the extension or normally.
+        """
+        pcb_path = Path(pcb_path)
+
+        # Active board in this KiCad process (cheap + reliable for the current window)
+        if self._is_open_in_this_instance(pcb_path):
+            return True
+
+        # Cross-instance detection: KiCad lock file next to the PCB
+        for lock_path in self._kicad_lock_paths(pcb_path):
+            try:
+                if lock_path.exists():
+                    return True
+            except Exception:
+                # If we can't stat the file, be conservative
+                return True
+
+        return False
+
+    def get_open_boards(self) -> Set[str]:
+        """Return the set of board names currently open in KiCad."""
+        open_boards: Set[str] = set()
+
+        for name, cfg in self.config.boards.items():
+            try:
+                pcb_path = self.project_dir / cfg.pcb_path
+                if pcb_path.exists() and self.is_pcb_open(pcb_path):
+                    open_boards.add(name)
+            except Exception:
+                pass
+
+        return open_boards
