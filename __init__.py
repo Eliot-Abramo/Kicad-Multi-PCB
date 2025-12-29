@@ -26,7 +26,7 @@ License: MIT
 Version: 10.1
 """
 
-__version__ = "10.1"
+__version__ = "10.2"
 __author__ = "Eliot"
 
 import os

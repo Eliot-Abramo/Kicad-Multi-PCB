@@ -10,10 +10,11 @@ Design your complete system in one schematic, then split it across multiple PCBs
 
 - **Shared Schematic**: One schematic, multiple PCBs. Edit once, reflected everywhere.
 - **Component Assignment**: Place components on specific boards during update.
-- **Auto-Packing**: New components are automatically arranged in a grid.
+- **Native Packing**: New components placed in grid; use KiCad's 'P' key to pack optimally.
 - **Inter-Board Ports**: Define and verify connections between boards.
-- **Block Footprints**: Professional visual representations for assembly views.
+- **Block Footprints**: Visual board representations for assembly views.
 - **DRC Integration**: Run design checks across all boards.
+- **Hierarchy View**: See all boards from any sub-PCB with current board highlighted.
 
 ## Installation
 
