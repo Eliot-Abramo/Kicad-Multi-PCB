@@ -1,36 +1,32 @@
 """
-Multi-Board PCB Manager v9 - KiCad Action Plugin
-=================================================
-Multi-PCB workflow: one schematic, multiple board layouts.
-
-Assignment logic:
-- Components are assigned by WHAT'S ACTUALLY PLACED on PCBs
-- Update adds all components not already on another board
-- Delete a component from a board = it becomes available again
-- No manual assignment needed (but available for reservations)
+Multi-Board PCB Manager v10 - KiCad Action Plugin
+==================================================
+Multi-PCB workflow with inter-board connectivity checking.
 
 Features:
-- Scan-based assignment (reads actual PCB contents)
-- Footprint change detection and replacement
-- Schematic hardlinks (changes sync automatically)
-- Board block footprints for root PCB visualization
-- Respects DNP and exclude_from_board
+- Port system for inter-board connections
+- Board block footprints with port pads
+- Aggregated connectivity/DRC checking
+- Threaded operations (no UI freeze)
+- Schematic hardlinks for sync
 
 For KiCad 9.0+
 """
 
 import pcbnew
 import wx
+import wx.lib.newevent
 import os
 import json
 import subprocess
 import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Optional, Dict, List, Set, Tuple
+from typing import Optional, Dict, List, Set, Tuple, Any
 from datetime import datetime
 from dataclasses import dataclass, field
-import faulthandler
+from concurrent.futures import ThreadPoolExecutor, Future
+import threading
 import traceback
 import re
 
@@ -41,6 +37,11 @@ import re
 BOARDS_DIR = "boards"
 CONFIG_FILE = ".kicad_multiboard.json"
 BLOCK_LIB_NAME = "MultiBoard_Blocks"
+PORT_LIB_NAME = "MultiBoard_Ports"
+
+# Custom events for thread communication
+WorkerDoneEvent, EVT_WORKER_DONE = wx.lib.newevent.NewEvent()
+WorkerProgressEvent, EVT_WORKER_PROGRESS = wx.lib.newevent.NewEvent()
 
 # ============================================================================
 # Data Model
@@ -48,9 +49,24 @@ BLOCK_LIB_NAME = "MultiBoard_Blocks"
 
 @dataclass
 class PortDef:
+    """A port represents a signal that crosses board boundaries."""
     name: str
-    side: str = "right"
-    position: float = 0.5
+    net: str = ""  # Net name this port connects to
+    side: str = "right"  # left, right, top, bottom
+    position: float = 0.5  # 0.0 to 1.0 along the edge
+    
+    def to_dict(self) -> dict:
+        return {"name": self.name, "net": self.net, "side": self.side, "position": self.position}
+    
+    @classmethod
+    def from_dict(cls, d: dict) -> "PortDef":
+        return cls(
+            name=d.get("name", ""),
+            net=d.get("net", ""),
+            side=d.get("side", "right"),
+            position=d.get("position", 0.5)
+        )
+
 
 @dataclass
 class BoardConfig:
@@ -63,64 +79,47 @@ class BoardConfig:
     
     def to_dict(self) -> dict:
         return {
-            "name": self.name,
-            "pcb_path": self.pcb_path,
-            "description": self.description,
-            "block_width": self.block_width,
-            "block_height": self.block_height,
-            "ports": {k: {"name": v.name, "side": v.side, "position": v.position} 
-                      for k, v in self.ports.items()}
+            "name": self.name, "pcb_path": self.pcb_path, "description": self.description,
+            "block_width": self.block_width, "block_height": self.block_height,
+            "ports": {k: v.to_dict() for k, v in self.ports.items()}
         }
     
     @classmethod
     def from_dict(cls, d: dict) -> "BoardConfig":
         cfg = cls(
-            name=d["name"],
-            pcb_path=d.get("pcb_path", d.get("pcb_filename", "")),
+            name=d["name"], pcb_path=d.get("pcb_path", ""),
             description=d.get("description", ""),
             block_width=d.get("block_width", 50.0),
-            block_height=d.get("block_height", 35.0),
+            block_height=d.get("block_height", 35.0)
         )
-        for pname, pdata in d.get("ports", {}).items():
-            if isinstance(pdata, dict):
-                cfg.ports[pname] = PortDef(
-                    name=pdata.get("name", pname),
-                    side=pdata.get("side", "right"),
-                    position=pdata.get("position", 0.5)
-                )
+        for k, v in d.get("ports", {}).items():
+            cfg.ports[k] = PortDef.from_dict(v) if isinstance(v, dict) else PortDef(name=k)
         return cfg
 
 
-@dataclass  
+@dataclass
 class ProjectConfig:
-    version: str = "9.0"
+    version: str = "10.0"
     root_schematic: str = ""
     root_pcb: str = ""
     boards: Dict[str, BoardConfig] = field(default_factory=dict)
-    # Reserved assignments (optional - for reserving components before placing)
-    # Most assignments are determined by scanning PCBs
-    reservations: Dict[str, str] = field(default_factory=dict)
     
     def to_dict(self) -> dict:
         return {
-            "version": self.version,
-            "root_schematic": self.root_schematic,
+            "version": self.version, "root_schematic": self.root_schematic,
             "root_pcb": self.root_pcb,
-            "boards": {k: v.to_dict() for k, v in self.boards.items()},
-            "reservations": self.reservations,
+            "boards": {k: v.to_dict() for k, v in self.boards.items()}
         }
     
     @classmethod
     def from_dict(cls, d: dict) -> "ProjectConfig":
         cfg = cls(
-            version=d.get("version", "9.0"),
+            version=d.get("version", "10.0"),
             root_schematic=d.get("root_schematic", ""),
-            root_pcb=d.get("root_pcb", ""),
-            reservations=d.get("reservations", d.get("assignments", {})),
+            root_pcb=d.get("root_pcb", "")
         )
-        for name, bd in d.get("boards", {}).items():
-            if isinstance(bd, dict):
-                cfg.boards[name] = BoardConfig.from_dict(bd)
+        for k, v in d.get("boards", {}).items():
+            cfg.boards[k] = BoardConfig.from_dict(v) if isinstance(v, dict) else BoardConfig(name=k, pcb_path="")
         return cfg
 
 
@@ -135,34 +134,22 @@ class MultiBoardManager:
         self.config_path = self.project_dir / CONFIG_FILE
         self.config = ProjectConfig()
         self.block_lib_path = self.project_dir / f"{BLOCK_LIB_NAME}.pretty"
+        self.port_lib_path = self.project_dir / f"{PORT_LIB_NAME}.pretty"
         
         self._fp_lib_cache: Dict[str, Path] = {}
+        self._kicad_share: Optional[Path] = None
         
         self.log_path = self.project_dir / "multiboard_debug.log"
-        self.fault_path = self.project_dir / "multiboard_fault.log"
-        self._init_logging()
         
         self._detect_root_files()
         self._load_config()
-        self._parse_fp_lib_table()
-        
-        self._log(f"Init: project={self.project_dir}, libs={len(self._fp_lib_cache)}")
+        self._init_libraries()
     
     def _find_project_root(self, start: Path) -> Path:
         for p in [start] + list(start.parents):
-            if (p / CONFIG_FILE).exists():
-                return p
-            if list(p.glob("*.kicad_pro")):
+            if (p / CONFIG_FILE).exists() or list(p.glob("*.kicad_pro")):
                 return p
         return start
-    
-    def _init_logging(self):
-        try:
-            self.log_path.touch(exist_ok=True)
-            fh = open(self.fault_path, "a", encoding="utf-8")
-            faulthandler.enable(file=fh, all_threads=True)
-        except Exception:
-            pass
     
     def _log(self, msg: str):
         try:
@@ -174,12 +161,9 @@ class MultiBoardManager:
     
     def _detect_root_files(self):
         for pro in self.project_dir.glob("*.kicad_pro"):
-            sch = pro.with_suffix(".kicad_sch")
-            pcb = pro.with_suffix(".kicad_pcb")
-            if sch.exists():
-                self.config.root_schematic = sch.name
-            if pcb.exists():
-                self.config.root_pcb = pcb.name
+            sch, pcb = pro.with_suffix(".kicad_sch"), pro.with_suffix(".kicad_pcb")
+            if sch.exists(): self.config.root_schematic = sch.name
+            if pcb.exists(): self.config.root_pcb = pcb.name
             break
     
     def _load_config(self):
@@ -192,157 +176,80 @@ class MultiBoardManager:
                 self._log(f"Config load error: {e}")
     
     def save_config(self):
-        try:
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(self.config.to_dict(), f, indent=2)
-        except Exception as e:
-            self._log(f"Config save error: {e}")
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump(self.config.to_dict(), f, indent=2)
     
     # -------------------------------------------------------------------------
-    # Footprint Library Table Parsing
+    # Library Management
     # -------------------------------------------------------------------------
     
-    def _parse_fp_lib_table(self):
+    def _init_libraries(self):
+        self._kicad_share = self._find_kicad_share()
         self._fp_lib_cache = {}
         
-        project_table = self.project_dir / "fp-lib-table"
-        if project_table.exists():
-            self._log(f"Parsing: {project_table}")
-            self._parse_single_fp_table(project_table)
+        # Parse project fp-lib-table
+        proj_table = self.project_dir / "fp-lib-table"
+        if proj_table.exists():
+            self._parse_fp_lib_table(proj_table)
         
-        global_table = self._find_global_fp_lib_table()
-        if global_table and global_table.exists():
-            self._log(f"Parsing: {global_table}")
-            self._parse_single_fp_table(global_table)
-        
-        # Fallback: scan KiCad footprints directory
-        kicad_share = self._find_kicad_share()
-        if kicad_share:
-            fp_dir = kicad_share / "footprints"
+        # Scan KiCad footprints directory
+        if self._kicad_share:
+            fp_dir = self._kicad_share / "footprints"
             if fp_dir.exists():
-                self._log(f"Scanning KiCad footprints: {fp_dir}")
-                count = 0
                 for lib in fp_dir.iterdir():
-                    if lib.is_dir() and lib.suffix == ".pretty":
-                        nick = lib.stem
-                        if nick not in self._fp_lib_cache:
-                            self._fp_lib_cache[nick] = lib
-                            count += 1
-                self._log(f"  Found {count} standard libraries")
+                    if lib.is_dir() and lib.suffix == ".pretty" and lib.stem not in self._fp_lib_cache:
+                        self._fp_lib_cache[lib.stem] = lib
         
-        self._log(f"Total libraries: {len(self._fp_lib_cache)}")
-    
-    def _find_global_fp_lib_table(self) -> Optional[Path]:
-        if os.name == "nt":
-            appdata = os.environ.get("APPDATA")
-            if appdata:
-                for ver in ["9.0", "8.0", "7.0"]:
-                    p = Path(appdata) / "kicad" / ver / "fp-lib-table"
-                    if p.exists():
-                        return p
-        else:
-            home = Path.home()
-            for path in [
-                home / ".config/kicad/9.0/fp-lib-table",
-                home / ".config/kicad/8.0/fp-lib-table",
-            ]:
-                if path.exists():
-                    return path
-        return None
-    
-    def _parse_single_fp_table(self, table_path: Path):
-        try:
-            content = table_path.read_text(encoding="utf-8", errors="ignore")
-        except Exception as e:
-            self._log(f"Failed to read {table_path}: {e}")
-            return
-        
-        # Multiple regex patterns for different formats
-        # Pattern 1: All on one line (project tables)
-        # Pattern 2: May have newlines (global tables)
-        patterns = [
-            re.compile(r'\(lib\s*\(name\s*"([^"]+)"\).*?\(uri\s*"([^"]+)"\)', re.DOTALL),
-            re.compile(r'\(lib\s+\(name\s+"([^"]+)"\)\s*\(type\s+"[^"]+"\)\s*\(uri\s+"([^"]+)"\)', re.DOTALL),
-            re.compile(r'\(name\s+"([^"]+)"\).*?\(uri\s+"([^"]+)"\)', re.DOTALL),
-        ]
-        
-        found = 0
-        for pattern in patterns:
-            for match in pattern.finditer(content):
-                nick = match.group(1)
-                uri = match.group(2)
-                
-                if nick in self._fp_lib_cache:
-                    continue  # Already found
-                
-                expanded = self._expand_uri(uri)
-                if expanded:
-                    path = Path(expanded)
-                    self._fp_lib_cache[nick] = path
-                    exists = "OK" if path.exists() else "NOT FOUND"
-                    self._log(f"  {nick} -> {path} [{exists}]")
-                    found += 1
-        
-        if found == 0:
-            self._log(f"  WARNING: No libraries parsed from {table_path.name}")
-    
-    def _expand_uri(self, uri: str) -> Optional[str]:
-        result = uri
-        result = result.replace("${KIPRJMOD}", str(self.project_dir))
-        
-        kicad_share = self._find_kicad_share()
-        
-        replacements = {}
-        if kicad_share:
-            for v in ["9", "8", "7", ""]:
-                var = f"KICAD{v}_FOOTPRINT_DIR" if v else "KICAD_FOOTPRINT_DIR"
-                replacements[f"${{{var}}}"] = str(kicad_share / "footprints")
-        
-        for var in ["KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR"]:
-            val = os.environ.get(var)
-            if val:
-                replacements[f"${{{var}}}"] = val
-        
-        for var, val in replacements.items():
-            result = result.replace(var, val)
-        
-        if result.startswith("file://"):
-            result = result[7:]
-        
-        if "${" in result:
-            return None
-        
-        return result
+        self._log(f"Loaded {len(self._fp_lib_cache)} libraries")
     
     def _find_kicad_share(self) -> Optional[Path]:
-        """Find KiCad share directory with footprints."""
-        candidates = []
-        
         if os.name == "nt":
-            # Windows paths
-            local = os.environ.get("LOCALAPPDATA", "")
-            pf = os.environ.get("ProgramFiles", "")
-            
-            for base in [local + "/Programs/KiCad", pf + "/KiCad"]:
-                base = Path(base)
+            for base in [Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "KiCad",
+                        Path(os.environ.get("ProgramFiles", "")) / "KiCad"]:
                 if base.exists():
                     for ver in sorted(base.iterdir(), reverse=True):
                         share = ver / "share" / "kicad"
-                        if share.exists() and (share / "footprints").exists():
-                            candidates.append(share)
+                        if (share / "footprints").exists():
+                            return share
         else:
-            # Linux/Mac
-            for share in [
-                Path("/usr/share/kicad"),
-                Path("/usr/local/share/kicad"),
-                Path.home() / ".local/share/kicad",
-            ]:
-                if share.exists() and (share / "footprints").exists():
-                    candidates.append(share)
+            for share in [Path("/usr/share/kicad"), Path("/usr/local/share/kicad")]:
+                if (share / "footprints").exists():
+                    return share
+        return None
+    
+    def _parse_fp_lib_table(self, path: Path):
+        try:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            for m in re.finditer(r'\(name\s*"([^"]+)"\).*?\(uri\s*"([^"]+)"\)', content, re.DOTALL):
+                nick, uri = m.group(1), m.group(2)
+                expanded = uri.replace("${KIPRJMOD}", str(self.project_dir))
+                if "${" not in expanded:
+                    self._fp_lib_cache[nick] = Path(expanded)
+        except Exception:
+            pass
+    
+    def _load_footprint(self, lib_nick: str, fp_name: str) -> Optional["pcbnew.FOOTPRINT"]:
+        # Try cache
+        if lib_nick in self._fp_lib_cache:
+            try:
+                return pcbnew.FootprintLoad(str(self._fp_lib_cache[lib_nick]), fp_name)
+            except Exception:
+                pass
         
-        if candidates:
-            self._log(f"Found KiCad share: {candidates[0]}")
-            return candidates[0]
+        # Try KiCad standard
+        if self._kicad_share:
+            std = self._kicad_share / "footprints" / f"{lib_nick}.pretty"
+            if std.exists():
+                try:
+                    return pcbnew.FootprintLoad(str(std), fp_name)
+                except Exception:
+                    pass
+        
+        # Try direct
+        try:
+            return pcbnew.FootprintLoad(lib_nick, fp_name)
+        except Exception:
+            pass
         
         return None
     
@@ -352,86 +259,29 @@ class MultiBoardManager:
     
     def _find_kicad_cli(self) -> Optional[str]:
         exe = shutil.which("kicad-cli")
-        if exe:
-            return exe
+        if exe: return exe
         
         if os.name == "nt":
-            for base in [
-                Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "KiCad",
-                Path(os.environ.get("ProgramFiles", "")) / "KiCad",
-            ]:
+            for base in [Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "KiCad",
+                        Path(os.environ.get("ProgramFiles", "")) / "KiCad"]:
                 if base.exists():
-                    for ver_dir in sorted(base.iterdir(), reverse=True):
-                        cli = ver_dir / "bin" / "kicad-cli.exe"
-                        if cli.exists():
-                            return str(cli)
+                    for ver in sorted(base.iterdir(), reverse=True):
+                        cli = ver / "bin" / "kicad-cli.exe"
+                        if cli.exists(): return str(cli)
         return None
     
     def _run_cli(self, args: List[str]) -> subprocess.CompletedProcess:
         cli = self._find_kicad_cli()
-        if not cli:
-            raise FileNotFoundError("kicad-cli not found")
-        
-        cmd = [cli] + args
-        self._log(f"CLI: {' '.join(cmd)}")
+        if not cli: raise FileNotFoundError("kicad-cli not found")
         
         kwargs = {"capture_output": True, "text": True, "cwd": str(self.project_dir)}
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        if os.name == "nt": kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         
-        return subprocess.run(cmd, **kwargs)
+        return subprocess.run([cli] + args, **kwargs)
     
     # -------------------------------------------------------------------------
-    # Schematic Linking
+    # Schematic Links
     # -------------------------------------------------------------------------
-    
-    def _collect_all_sheets(self, root_sch: Path) -> Set[Path]:
-        sheets = set()
-        visited = set()
-        stack = [root_sch]
-        
-        while stack:
-            sch = stack.pop()
-            if sch in visited:
-                continue
-            visited.add(sch)
-            
-            try:
-                content = sch.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                continue
-            
-            for pat in [r'\(property\s+"Sheetfile"\s+"([^"]+\.kicad_sch)"',
-                       r'\(sheetfile\s+"([^"]+\.kicad_sch)"']:
-                for ref in re.findall(pat, content, re.IGNORECASE):
-                    sheets.add(Path(ref))
-                    full = (sch.parent / ref).resolve()
-                    if full.exists():
-                        stack.append(full)
-        
-        return sheets
-    
-    def _link_file(self, src: Path, dst: Path) -> bool:
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if dst.exists() or dst.is_symlink():
-                dst.unlink()
-            
-            try:
-                os.link(str(src), str(dst))
-                return True
-            except Exception:
-                pass
-            
-            try:
-                os.symlink(str(src), str(dst))
-                return True
-            except Exception:
-                pass
-            
-            return False
-        except Exception:
-            return False
     
     def _setup_board_project(self, board: BoardConfig):
         pcb_path = self.project_dir / board.pcb_path
@@ -448,34 +298,45 @@ class MultiBoardManager:
         # Link schematics
         if self.config.root_schematic:
             root_sch = self.project_dir / self.config.root_schematic
-            board_sch = board_dir / f"{base}.kicad_sch"
-            
             if root_sch.exists():
-                self._link_file(root_sch, board_sch)
+                self._link_file(root_sch, board_dir / f"{base}.kicad_sch")
                 
-                for sheet in self._collect_all_sheets(root_sch):
+                # Hierarchical sheets
+                for sheet in self._find_sheets(root_sch):
                     src = (root_sch.parent / sheet).resolve()
-                    dst = board_dir / sheet
                     if src.exists():
-                        self._link_file(src, dst)
+                        self._link_file(src, board_dir / sheet)
         
         # Library tables
-        self._setup_board_lib_tables(board_dir)
-    
-    def _setup_board_lib_tables(self, board_dir: Path):
-        root_abs = self.project_dir.as_posix()
-        
         for table in ("fp-lib-table", "sym-lib-table"):
             src = self.project_dir / table
-            dst = board_dir / table
-            
             if src.exists():
-                try:
-                    content = src.read_text(encoding="utf-8", errors="ignore")
-                    content = content.replace("${KIPRJMOD}", root_abs)
-                    dst.write_text(content, encoding="utf-8")
-                except Exception:
-                    pass
+                content = src.read_text(encoding="utf-8", errors="ignore")
+                content = content.replace("${KIPRJMOD}", self.project_dir.as_posix())
+                (board_dir / table).write_text(content, encoding="utf-8")
+    
+    def _link_file(self, src: Path, dst: Path):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists() or dst.is_symlink(): dst.unlink()
+        try: os.link(str(src), str(dst))
+        except Exception:
+            try: os.symlink(str(src), str(dst))
+            except Exception: pass
+    
+    def _find_sheets(self, sch: Path) -> Set[Path]:
+        sheets, visited, stack = set(), set(), [sch]
+        while stack:
+            s = stack.pop()
+            if s in visited: continue
+            visited.add(s)
+            try:
+                content = s.read_text(encoding="utf-8", errors="ignore")
+                for m in re.findall(r'"([^"]+\.kicad_sch)"', content):
+                    sheets.add(Path(m))
+                    full = (s.parent / m).resolve()
+                    if full.exists(): stack.append(full)
+            except Exception: pass
+        return sheets
     
     # -------------------------------------------------------------------------
     # Board Management
@@ -483,272 +344,237 @@ class MultiBoardManager:
     
     def create_board(self, name: str, description: str = "") -> Tuple[bool, str]:
         if name in self.config.boards:
-            return False, f"Board '{name}' already exists"
+            return False, f"'{name}' already exists"
         
         safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in name)
-        
-        board_dir = self.project_dir / BOARDS_DIR / safe
-        pcb_path = board_dir / f"{safe}.kicad_pcb"
         rel_path = f"{BOARDS_DIR}/{safe}/{safe}.kicad_pcb"
+        pcb_path = self.project_dir / rel_path
         
         if pcb_path.exists():
-            return False, f"PCB already exists: {rel_path}"
+            return False, f"PCB exists: {rel_path}"
         
-        board_dir.mkdir(parents=True, exist_ok=True)
-        
-        if not self._create_empty_pcb(pcb_path):
-            return False, "Failed to create PCB"
+        pcb_path.parent.mkdir(parents=True, exist_ok=True)
+        self._create_empty_pcb(pcb_path)
         
         board = BoardConfig(name=name, pcb_path=rel_path, description=description)
         self._setup_board_project(board)
         self._generate_block_footprint(board)
-        self._add_block_lib_to_table()
+        self._ensure_lib_in_table(BLOCK_LIB_NAME, f"{BLOCK_LIB_NAME}.pretty")
         
         self.config.boards[name] = board
         self.save_config()
-        
-        self._log(f"Created: {name} at {rel_path}")
         return True, rel_path
     
-    def _create_empty_pcb(self, path: Path) -> bool:
-        content = '''(kicad_pcb
-  (version 20240108)
-  (generator "multiboard")
-  (generator_version "9.0")
-  (general (thickness 1.6) (legacy_teardrops no))
-  (paper "A4")
+    def _create_empty_pcb(self, path: Path):
+        path.write_text('''(kicad_pcb
+  (version 20240108) (generator "multiboard") (generator_version "9.0")
+  (general (thickness 1.6) (legacy_teardrops no)) (paper "A4")
   (layers
     (0 "F.Cu" signal) (31 "B.Cu" signal)
-    (32 "B.Adhes" user) (33 "F.Adhes" user)
-    (34 "B.Paste" user) (35 "F.Paste" user)
     (36 "B.SilkS" user) (37 "F.SilkS" user)
     (38 "B.Mask" user) (39 "F.Mask" user)
-    (40 "Dwgs.User" user) (41 "Cmts.User" user)
-    (42 "Eco1.User" user) (43 "Eco2.User" user)
-    (44 "Edge.Cuts" user) (45 "Margin" user)
-    (46 "B.CrtYd" user) (47 "F.CrtYd" user)
-    (48 "B.Fab" user) (49 "F.Fab" user)
-  )
-  (setup (pad_to_mask_clearance 0))
-  (net 0 "")
-)
-'''
-        try:
-            path.write_text(content, encoding="utf-8")
-            return True
-        except Exception:
-            return False
+    (44 "Edge.Cuts" user) (47 "F.CrtYd" user) (49 "F.Fab" user))
+  (setup (pad_to_mask_clearance 0)) (net 0 ""))
+''', encoding="utf-8")
     
     # -------------------------------------------------------------------------
-    # Board Block Footprint
+    # Block Footprint with Ports
     # -------------------------------------------------------------------------
     
-    def _generate_block_footprint(self, board: BoardConfig) -> bool:
+    def _generate_block_footprint(self, board: BoardConfig):
         self.block_lib_path.mkdir(parents=True, exist_ok=True)
         
         fp_name = f"Block_{board.name}"
-        fp_path = self.block_lib_path / f"{fp_name}.kicad_mod"
-        
         w, h = board.block_width, board.block_height
         
-        content = f'''(footprint "{fp_name}"
-  (version 20240108)
-  (generator "multiboard")
-  (layer "F.Cu")
-  (descr "Board block: {board.name}")
-  (attr board_only exclude_from_pos_files exclude_from_bom)
-  (fp_text reference "MB_{board.name}" (at 0 {-h/2-2:.1f}) (layer "F.SilkS")
-    (effects (font (size 1.5 1.5) (thickness 0.15))))
-  (fp_text value "{board.name}" (at 0 0) (layer "F.Fab")
-    (effects (font (size 2 2) (thickness 0.2))))
-  (fp_rect (start {-w/2:.1f} {-h/2:.1f}) (end {w/2:.1f} {h/2:.1f})
-    (stroke (width 0.3) (type solid)) (fill none) (layer "F.SilkS"))
-  (fp_rect (start {-w/2-1:.1f} {-h/2-1:.1f}) (end {w/2+1:.1f} {h/2+1:.1f})
-    (stroke (width 0.05) (type solid)) (fill none) (layer "F.CrtYd"))
-)
-'''
-        try:
-            fp_path.write_text(content, encoding="utf-8")
-            return True
-        except Exception:
-            return False
+        lines = [
+            f'(footprint "{fp_name}"',
+            '  (version 20240108) (generator "multiboard") (layer "F.Cu")',
+            f'  (descr "Board block: {board.name}")',
+            '  (attr board_only exclude_from_pos_files exclude_from_bom)',
+            f'  (fp_text reference "REF**" (at 0 {-h/2-2:.1f}) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))',
+            f'  (fp_text value "{board.name}" (at 0 {h/2+2:.1f}) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))',
+            f'  (fp_rect (start {-w/2:.2f} {-h/2:.2f}) (end {w/2:.2f} {h/2:.2f}) (stroke (width 0.25) (type solid)) (fill none) (layer "F.SilkS"))',
+            f'  (fp_rect (start {-w/2-0.5:.2f} {-h/2-0.5:.2f}) (end {w/2+0.5:.2f} {h/2+0.5:.2f}) (stroke (width 0.05) (type solid)) (fill none) (layer "F.CrtYd"))',
+        ]
+        
+        # Add port pads
+        pad_num = 1
+        for port_name, port in sorted(board.ports.items()):
+            x, y = self._port_position(port, w, h)
+            rot = {"left": 180, "right": 0, "top": 270, "bottom": 90}.get(port.side, 0)
+            
+            lines.append(
+                f'  (pad "{pad_num}" smd roundrect (at {x:.2f} {y:.2f} {rot}) (size 2 1) '
+                f'(layers "F.Cu" "F.Paste" "F.Mask") (roundrect_rratio 0.25))'
+            )
+            lines.append(
+                f'  (fp_text user "{port_name}" (at {x:.2f} {y + (1.5 if port.side in ["left","right"] else -1.5 if port.side=="top" else 1.5):.2f}) '
+                f'(layer "F.SilkS") (effects (font (size 0.8 0.8) (thickness 0.1))))'
+            )
+            pad_num += 1
+        
+        lines.append(')')
+        
+        (self.block_lib_path / f"{fp_name}.kicad_mod").write_text('\n'.join(lines), encoding="utf-8")
     
-    def _add_block_lib_to_table(self):
+    def _port_position(self, port: PortDef, w: float, h: float) -> Tuple[float, float]:
+        p = port.position
+        if port.side == "left": return (-w/2, h * (p - 0.5))
+        if port.side == "right": return (w/2, h * (p - 0.5))
+        if port.side == "top": return (w * (p - 0.5), -h/2)
+        if port.side == "bottom": return (w * (p - 0.5), h/2)
+        return (0, 0)
+    
+    def _ensure_lib_in_table(self, lib_name: str, rel_path: str):
         table = self.project_dir / "fp-lib-table"
-        entry = f'  (lib (name "{BLOCK_LIB_NAME}")(type "KiCad")(uri "${{KIPRJMOD}}/{BLOCK_LIB_NAME}.pretty")(options "")(descr ""))'
+        entry = f'  (lib (name "{lib_name}")(type "KiCad")(uri "${{KIPRJMOD}}/{rel_path}")(options "")(descr ""))'
         
         if table.exists():
             content = table.read_text(encoding="utf-8", errors="ignore")
-            if BLOCK_LIB_NAME in content:
-                return
-            content = content.rstrip().rstrip(')')
-            content += f'\n{entry}\n)'
+            if lib_name in content: return
+            content = content.rstrip().rstrip(')') + f'\n{entry}\n)'
         else:
             content = f'(fp_lib_table\n  (version 7)\n{entry}\n)'
         
         table.write_text(content, encoding="utf-8")
     
     # -------------------------------------------------------------------------
-    # PCB Scanning - Determine what's placed where
+    # Port Footprint (for sub-boards)
+    # -------------------------------------------------------------------------
+    
+    def generate_port_footprint(self, port_name: str):
+        """Generate a port marker footprint for sub-boards."""
+        self.port_lib_path.mkdir(parents=True, exist_ok=True)
+        
+        fp = f'''(footprint "Port_{port_name}"
+  (version 20240108) (generator "multiboard") (layer "F.Cu")
+  (descr "Inter-board port: {port_name}")
+  (attr smd)
+  (fp_text reference "REF**" (at 0 -2) (layer "F.SilkS") (effects (font (size 0.8 0.8) (thickness 0.12))))
+  (fp_text value "PORT" (at 0 2) (layer "F.Fab") (effects (font (size 0.8 0.8) (thickness 0.12))))
+  (fp_text user "{port_name}" (at 0 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
+  (pad "1" smd roundrect (at 0 0) (size 2 2) (layers "F.Cu" "F.Paste" "F.Mask") (roundrect_rratio 0.25))
+  (fp_circle (center 0 0) (end 1.5 0) (stroke (width 0.15) (type solid)) (fill none) (layer "F.SilkS"))
+)'''
+        (self.port_lib_path / f"Port_{port_name}.kicad_mod").write_text(fp, encoding="utf-8")
+        self._ensure_lib_in_table(PORT_LIB_NAME, f"{PORT_LIB_NAME}.pretty")
+    
+    # -------------------------------------------------------------------------
+    # PCB Scanning
     # -------------------------------------------------------------------------
     
     def scan_all_boards(self) -> Dict[str, Tuple[str, str]]:
-        """
-        Scan all board PCBs to find placed components.
-        Returns: {ref: (board_name, footprint_id)}
-        """
+        """Returns {ref: (board_name, footprint_id)}"""
         placed = {}
-        
         for name, board in self.config.boards.items():
             pcb_path = self.project_dir / board.pcb_path
-            if not pcb_path.exists():
-                continue
-            
+            if not pcb_path.exists(): continue
             try:
                 pcb = pcbnew.LoadBoard(str(pcb_path))
                 for fp in pcb.GetFootprints():
                     ref = fp.GetReference()
                     if ref and not ref.startswith("#") and not ref.startswith("MB_"):
-                        # Get footprint ID (lib:name)
                         fpid = fp.GetFPID()
-                        lib = fpid.GetLibNickname() if hasattr(fpid, 'GetLibNickname') else ""
-                        fpname = fpid.GetLibItemName() if hasattr(fpid, 'GetLibItemName') else ""
-                        fp_str = f"{lib}:{fpname}" if lib else fpname
+                        fp_str = f"{fpid.GetLibNickname()}:{fpid.GetLibItemName()}"
                         placed[ref] = (name, fp_str)
             except Exception as e:
                 self._log(f"Scan error {name}: {e}")
-        
         return placed
     
-    # -------------------------------------------------------------------------
-    # Netlist
-    # -------------------------------------------------------------------------
-    
-    def _export_netlist(self) -> Optional[Path]:
-        if not self.config.root_schematic:
-            return None
+    def get_board_nets(self, board_name: str) -> Dict[str, Set[str]]:
+        """Get nets and their connected pads for a board. Returns {net_name: {pad_refs}}"""
+        board = self.config.boards.get(board_name)
+        if not board: return {}
         
-        sch = self.project_dir / self.config.root_schematic
-        if not sch.exists():
-            return None
+        pcb_path = self.project_dir / board.pcb_path
+        if not pcb_path.exists(): return {}
         
-        netlist = self.project_dir / ".multiboard_netlist.xml"
-        
+        nets = {}
         try:
-            self._run_cli([
-                "sch", "export", "netlist",
-                "--format", "kicadxml",
-                "-o", str(netlist),
-                str(sch)
-            ])
-            return netlist if netlist.exists() else None
+            pcb = pcbnew.LoadBoard(str(pcb_path))
+            for fp in pcb.GetFootprints():
+                ref = fp.GetReference()
+                for pad in fp.Pads():
+                    net_name = pad.GetNetname()
+                    if net_name:
+                        nets.setdefault(net_name, set()).add(f"{ref}.{pad.GetNumber()}")
         except Exception:
-            return None
-    
-    def _parse_netlist(self, path: Path) -> Tuple[Dict, ET.Element]:
-        tree = ET.parse(path)
-        root = tree.getroot()
-        components = {}
-        
-        for comp in root.findall(".//components/comp"):
-            ref = comp.get("ref", "")
-            if not ref or ref.startswith("#"):
-                continue
-            
-            footprint = (comp.findtext("footprint") or "").strip()
-            value = (comp.findtext("value") or "").strip()
-            tstamp = (comp.findtext("tstamp") or "").strip()
-            
-            dnp = False
-            exclude = False
-            
-            for prop in comp.findall("property"):
-                pname = (prop.get("name") or "").lower()
-                pval = (prop.get("value") or "").lower()
-                if pname == "dnp" and pval in ("yes", "true", "1"):
-                    dnp = True
-                if "exclude" in pname and "board" in pname and pval in ("yes", "true", "1"):
-                    exclude = True
-            
-            fields = comp.find("fields")
-            if fields is not None:
-                for f in fields.findall("field"):
-                    fname = (f.get("name") or "").lower()
-                    fval = (f.text or "").lower()
-                    if fname == "dnp" and fval in ("yes", "true", "1"):
-                        dnp = True
-            
-            if value.upper() == "DNP":
-                dnp = True
-            if not footprint:
-                exclude = True
-            
-            components[ref] = {
-                "footprint": footprint,
-                "value": value,
-                "tstamp": tstamp,
-                "dnp": dnp,
-                "exclude": exclude,
-            }
-        
-        return components, root
-    
-    def _filter_netlist_for_board(self, path: Path, board_name: str, 
-                                   components: Dict, root: ET.Element,
-                                   placed: Dict[str, Tuple[str, str]]) -> Path:
-        """
-        Filter netlist for a specific board.
-        Include: not placed anywhere OR placed on this board OR reserved for this board
-        Exclude: placed on different board OR reserved for different board OR DNP/exclude
-        """
-        filtered = path.with_suffix(".filtered.xml")
-        exclude_refs = set()
-        
-        for ref, info in components.items():
-            # Always exclude DNP and exclude_from_board
-            if info["dnp"] or info["exclude"]:
-                exclude_refs.add(ref)
-                continue
-            
-            # Check if placed on another board
-            if ref in placed:
-                placed_board, _ = placed[ref]
-                if placed_board != board_name:
-                    exclude_refs.add(ref)
-                    continue
-            
-            # Check reservations
-            reserved = self.config.reservations.get(ref, "")
-            if reserved and reserved != board_name:
-                exclude_refs.add(ref)
-                continue
-        
-        # Remove from XML
-        comps = root.find("components")
-        if comps is not None:
-            for comp in list(comps.findall("comp")):
-                if comp.get("ref") in exclude_refs:
-                    comps.remove(comp)
-        
-        nets = root.find("nets")
-        if nets is not None:
-            for net in nets.findall("net"):
-                for node in list(net.findall("node")):
-                    if node.get("ref") in exclude_refs:
-                        net.remove(node)
-        
-        tree = ET.ElementTree(root)
-        tree.write(filtered, encoding="utf-8", xml_declaration=True)
-        
-        included = len(components) - len(exclude_refs)
-        self._log(f"Filter {board_name}: {included} included, {len(exclude_refs)} excluded")
-        return filtered
+            pass
+        return nets
     
     # -------------------------------------------------------------------------
-    # Update PCB
+    # Connectivity Check
     # -------------------------------------------------------------------------
     
-    def update_board(self, board_name: str) -> Tuple[bool, str]:
+    def check_connectivity(self, progress_callback=None) -> Dict[str, Any]:
+        """
+        Check connectivity across all boards.
+        Returns report with:
+        - unconnected_nets: nets that don't connect to anything
+        - cross_board_nets: nets that should connect via ports
+        - missing_ports: expected port connections not made
+        """
+        report = {
+            "boards": {},
+            "cross_board": [],
+            "errors": [],
+            "warnings": []
+        }
+        
+        total = len(self.config.boards)
+        
+        for i, (name, board) in enumerate(self.config.boards.items()):
+            if progress_callback:
+                progress_callback(int(100 * i / max(total, 1)), f"Checking {name}...")
+            
+            pcb_path = self.project_dir / board.pcb_path
+            if not pcb_path.exists():
+                report["errors"].append(f"{name}: PCB not found")
+                continue
+            
+            # Run DRC via CLI
+            try:
+                drc_file = pcb_path.with_suffix(".drc.json")
+                self._run_cli(["pcb", "drc", "--format", "json", "-o", str(drc_file), str(pcb_path)])
+                
+                if drc_file.exists():
+                    drc = json.loads(drc_file.read_text(encoding="utf-8"))
+                    violations = drc.get("violations", [])
+                    
+                    # Filter out port-related "unconnected" errors
+                    port_nets = {p.net for p in board.ports.values() if p.net}
+                    filtered = []
+                    for v in violations:
+                        # Keep violation unless it's an unconnected item on a port net
+                        if "unconnected" in v.get("type", "").lower():
+                            # Check if this net has a port
+                            desc = v.get("description", "")
+                            is_port_net = any(pn in desc for pn in port_nets)
+                            if is_port_net:
+                                continue  # Skip - this is an expected inter-board connection
+                        filtered.append(v)
+                    
+                    report["boards"][name] = {
+                        "violations": len(filtered),
+                        "details": filtered[:20]  # First 20
+                    }
+                    
+                    drc_file.unlink()
+            except Exception as e:
+                report["errors"].append(f"{name}: DRC failed - {e}")
+        
+        if progress_callback:
+            progress_callback(100, "Done")
+        
+        return report
+    
+    # -------------------------------------------------------------------------
+    # Update Board
+    # -------------------------------------------------------------------------
+    
+    def update_board(self, board_name: str, progress_callback=None) -> Tuple[bool, str]:
+        """Update a board from schematic. Returns (success, message)."""
         board = self.config.boards.get(board_name)
         if not board:
             return False, f"Board '{board_name}' not found"
@@ -757,31 +583,27 @@ class MultiBoardManager:
         if not pcb_path.exists():
             return False, f"PCB not found: {board.pcb_path}"
         
-        self._log(f"=== Updating: {board_name} ===")
-        
-        # Refresh schematic links
-        self._setup_board_project(board)
-        
-        # Scan what's already placed on ALL boards
-        placed = self.scan_all_boards()
-        self._log(f"Scanned {len(placed)} placed components across all boards")
-        
-        # Export netlist
-        netlist_path = self._export_netlist()
-        if not netlist_path:
-            return False, "Failed to export netlist"
-        
         try:
-            components, root = self._parse_netlist(netlist_path)
-            filtered_path = self._filter_netlist_for_board(
-                netlist_path, board_name, components, root, placed
-            )
+            if progress_callback: progress_callback(5, "Refreshing schematic links...")
+            self._setup_board_project(board)
             
-            # Load target board
+            if progress_callback: progress_callback(10, "Scanning existing boards...")
+            placed = self.scan_all_boards()
+            
+            if progress_callback: progress_callback(20, "Exporting netlist...")
+            netlist_path = self._export_netlist()
+            if not netlist_path:
+                return False, "Failed to export netlist"
+            
+            if progress_callback: progress_callback(30, "Parsing netlist...")
+            components = self._parse_netlist_fast(netlist_path)
+            
+            if progress_callback: progress_callback(40, "Loading PCB...")
             board_obj = pcbnew.LoadBoard(str(pcb_path))
             if not board_obj:
                 return False, "Failed to load PCB"
             
+            # Build existing footprint map
             existing = {}
             existing_fp = {}
             for fp in board_obj.GetFootprints():
@@ -789,512 +611,599 @@ class MultiBoardManager:
                 if ref:
                     existing[ref] = fp
                     fpid = fp.GetFPID()
-                    lib = fpid.GetLibNickname() if hasattr(fpid, 'GetLibNickname') else ""
-                    fpname = fpid.GetLibItemName() if hasattr(fpid, 'GetLibItemName') else ""
-                    existing_fp[ref] = f"{lib}:{fpname}" if lib else fpname
+                    existing_fp[ref] = f"{fpid.GetLibNickname()}:{fpid.GetLibItemName()}"
             
-            # Parse filtered netlist
-            tree = ET.parse(filtered_path)
-            froot = tree.getroot()
+            # Filter components for this board
+            to_add = []
+            to_update = []
             
-            added = 0
+            for ref, info in components.items():
+                if info["dnp"] or info["exclude"]:
+                    continue
+                
+                # Skip if on another board
+                if ref in placed:
+                    placed_board, _ = placed[ref]
+                    if placed_board != board_name:
+                        continue
+                
+                if ref in existing:
+                    to_update.append((ref, info))
+                else:
+                    to_add.append((ref, info))
+            
+            # Process updates
+            if progress_callback: progress_callback(50, f"Updating {len(to_update)} components...")
+            
             updated = 0
             replaced = 0
+            for ref, info in to_update:
+                fp = existing[ref]
+                old_fp_id = existing_fp.get(ref, "")
+                
+                if old_fp_id != info["footprint"]:
+                    # Footprint changed - replace
+                    lib, name = (info["footprint"].split(":", 1) + [""])[:2] if ":" in info["footprint"] else ("", info["footprint"])
+                    new_fp = self._load_footprint(lib, name)
+                    if new_fp:
+                        pos, rot, layer = fp.GetPosition(), fp.GetOrientationDegrees(), fp.GetLayer()
+                        board_obj.Remove(fp)
+                        new_fp.SetReference(ref)
+                        new_fp.SetValue(info["value"])
+                        new_fp.SetPosition(pos)
+                        new_fp.SetOrientationDegrees(rot)
+                        new_fp.SetLayer(layer)
+                        self._set_fp_path(new_fp, info["tstamp"])
+                        board_obj.Add(new_fp)
+                        existing[ref] = new_fp
+                        replaced += 1
+                    else:
+                        fp.SetValue(info["value"])
+                        updated += 1
+                else:
+                    fp.SetValue(info["value"])
+                    self._set_fp_path(fp, info["tstamp"])
+                    updated += 1
+            
+            # Process additions
+            if progress_callback: progress_callback(70, f"Adding {len(to_add)} components...")
+            
+            added = 0
             failed = 0
             failed_list = []
             
-            for comp in froot.findall(".//components/comp"):
-                ref = comp.get("ref", "")
-                if not ref or ref.startswith("#"):
+            for ref, info in to_add:
+                lib, name = (info["footprint"].split(":", 1) + [""])[:2] if ":" in info["footprint"] else ("", info["footprint"])
+                fp = self._load_footprint(lib, name)
+                
+                if not fp:
+                    failed += 1
+                    failed_list.append(f"{ref}: {info['footprint']}")
                     continue
                 
-                fp_id = (comp.findtext("footprint") or "").strip()
-                value = (comp.findtext("value") or "").strip()
-                tstamp = (comp.findtext("tstamp") or "").strip()
-                
-                if not fp_id:
-                    continue
-                
-                lib_nick, fp_name = (fp_id.split(":", 1) + [""])[:2] if ":" in fp_id else ("", fp_id)
-                
-                if ref in existing:
-                    fp = existing[ref]
-                    old_fp_id = existing_fp.get(ref, "")
-                    
-                    # Check if footprint changed
-                    if old_fp_id != fp_id:
-                        self._log(f"Footprint change: {ref} {old_fp_id} -> {fp_id}")
-                        # Load new footprint and replace
-                        new_fp = self._load_footprint(lib_nick, fp_name)
-                        if new_fp:
-                            # Preserve position and rotation
-                            pos = fp.GetPosition()
-                            rot = fp.GetOrientationDegrees()
-                            layer = fp.GetLayer()
-                            
-                            # Remove old, add new
-                            board_obj.Remove(fp)
-                            new_fp.SetReference(ref)
-                            new_fp.SetValue(value)
-                            new_fp.SetPosition(pos)
-                            new_fp.SetOrientationDegrees(rot)
-                            new_fp.SetLayer(layer)
-                            self._set_fp_path(new_fp, tstamp)
-                            board_obj.Add(new_fp)
-                            existing[ref] = new_fp
-                            replaced += 1
-                        else:
-                            self._log(f"Failed to replace: {ref}")
-                            # Keep old footprint, just update value
-                            try:
-                                fp.SetValue(value)
-                            except Exception:
-                                pass
-                            updated += 1
-                    else:
-                        # Same footprint, just update value
-                        try:
-                            fp.SetValue(value)
-                        except Exception:
-                            pass
-                        self._set_fp_path(fp, tstamp)
-                        updated += 1
-                else:
-                    # New component
-                    fp = self._load_footprint(lib_nick, fp_name)
-                    if not fp:
-                        failed += 1
-                        failed_list.append(f"{ref}: {fp_id}")
-                        self._log(f"Failed to load: {ref} ({fp_id})")
-                        continue
-                    
-                    try:
-                        fp.SetReference(ref)
-                        fp.SetValue(value)
-                        fp.SetPosition(pcbnew.VECTOR2I(0, 0))
-                        self._set_fp_path(fp, tstamp)
-                        board_obj.Add(fp)
-                        existing[ref] = fp
-                        added += 1
-                    except Exception as e:
-                        failed += 1
-                        self._log(f"Add error {ref}: {e}")
+                fp.SetReference(ref)
+                fp.SetValue(info["value"])
+                fp.SetPosition(pcbnew.VECTOR2I(0, 0))
+                self._set_fp_path(fp, info["tstamp"])
+                board_obj.Add(fp)
+                existing[ref] = fp
+                added += 1
             
             # Assign nets
-            self._assign_nets(board_obj, froot, existing)
+            if progress_callback: progress_callback(85, "Assigning nets...")
+            self._assign_nets_fast(board_obj, netlist_path, existing)
             
             # Save
+            if progress_callback: progress_callback(95, "Saving...")
             pcbnew.SaveBoard(str(pcb_path), board_obj)
             
             # Cleanup
-            for p in [netlist_path, filtered_path]:
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
+            try: netlist_path.unlink()
+            except Exception: pass
             
-            self._log(f"Done: added={added} updated={updated} replaced={replaced} failed={failed}")
-            
-            msg = f"Updated {board_name}:\n\n"
-            msg += f"• Added: {added}\n"
-            msg += f"• Updated: {updated}\n"
-            if replaced:
-                msg += f"• Footprints replaced: {replaced}\n"
-            msg += f"• Failed: {failed}"
-            
+            msg = f"Added: {added}\nUpdated: {updated}"
+            if replaced: msg += f"\nReplaced: {replaced}"
+            msg += f"\nFailed: {failed}"
             if failed_list:
-                msg += f"\n\nFailed (first 10):\n" + "\n".join(failed_list[:10])
-            
-            msg += "\n\nReload PCB: File → Revert"
+                msg += f"\n\nFailed:\n" + "\n".join(failed_list[:10])
             
             return True, msg
             
         except Exception as e:
-            self._log(f"Error: {e}\n{traceback.format_exc()}")
-            return False, f"Failed: {e}"
+            self._log(f"Update error: {e}\n{traceback.format_exc()}")
+            return False, f"Error: {e}"
     
-    def _load_footprint(self, lib_nick: str, fp_name: str) -> Optional["pcbnew.FOOTPRINT"]:
-        # Method 1: From cache
-        if lib_nick in self._fp_lib_cache:
-            lib_path = self._fp_lib_cache[lib_nick]
-            try:
-                fp = pcbnew.FootprintLoad(str(lib_path), fp_name)
-                if fp:
-                    return fp
-            except Exception:
-                pass
+    def _export_netlist(self) -> Optional[Path]:
+        if not self.config.root_schematic: return None
+        sch = self.project_dir / self.config.root_schematic
+        if not sch.exists(): return None
         
-        # Method 2: Project local
-        local = self.project_dir / f"{lib_nick}.pretty"
-        if local.exists():
-            try:
-                fp = pcbnew.FootprintLoad(str(local), fp_name)
-                if fp:
-                    return fp
-            except Exception:
-                pass
-        
-        # Method 3: lib/lib_fp folder (common pattern)
-        lib_fp = self.project_dir / "lib" / "lib_fp" / f"{lib_nick}.pretty"
-        if lib_fp.exists():
-            try:
-                fp = pcbnew.FootprintLoad(str(lib_fp), fp_name)
-                if fp:
-                    return fp
-            except Exception:
-                pass
-        
-        # Method 4: KiCad standard library locations
-        kicad_share = self._find_kicad_share()
-        if kicad_share:
-            std_lib = kicad_share / "footprints" / f"{lib_nick}.pretty"
-            if std_lib.exists():
-                try:
-                    fp = pcbnew.FootprintLoad(str(std_lib), fp_name)
-                    if fp:
-                        return fp
-                except Exception:
-                    pass
-        
-        # Method 5: Direct load (might work if KiCad has tables loaded)
+        netlist = self.project_dir / ".multiboard_netlist.xml"
         try:
-            fp = pcbnew.FootprintLoad(lib_nick, fp_name)
-            if fp:
-                return fp
+            self._run_cli(["sch", "export", "netlist", "--format", "kicadxml", "-o", str(netlist), str(sch)])
+            return netlist if netlist.exists() else None
         except Exception:
-            pass
+            return None
+    
+    def _parse_netlist_fast(self, path: Path) -> Dict[str, dict]:
+        """Fast netlist parsing with minimal overhead."""
+        components = {}
         
-        return None
+        # Use iterparse for efficiency
+        for event, elem in ET.iterparse(str(path), events=["end"]):
+            if elem.tag == "comp":
+                ref = elem.get("ref", "")
+                if not ref or ref.startswith("#"):
+                    elem.clear()
+                    continue
+                
+                footprint = ""
+                value = ""
+                tstamp = ""
+                dnp = False
+                exclude = False
+                
+                for child in elem:
+                    if child.tag == "footprint": footprint = (child.text or "").strip()
+                    elif child.tag == "value": value = (child.text or "").strip()
+                    elif child.tag == "tstamp": tstamp = (child.text or "").strip()
+                    elif child.tag == "property":
+                        pname = (child.get("name") or "").lower()
+                        pval = (child.get("value") or "").lower()
+                        if pname == "dnp" and pval in ("yes", "true", "1"): dnp = True
+                        if "exclude" in pname and "board" in pname and pval in ("yes", "true", "1"): exclude = True
+                
+                if value.upper() == "DNP": dnp = True
+                if not footprint: exclude = True
+                
+                components[ref] = {"footprint": footprint, "value": value, "tstamp": tstamp, "dnp": dnp, "exclude": exclude}
+                elem.clear()
+        
+        return components
     
     def _set_fp_path(self, fp, tstamp: str):
-        if not tstamp:
-            return
-        try:
-            path = f"/{tstamp}"
-            if hasattr(pcbnew, "KIID_PATH"):
-                fp.SetPath(pcbnew.KIID_PATH(path))
-            else:
-                fp.SetPath(path)
-        except Exception:
-            pass
+        if tstamp:
+            try:
+                fp.SetPath(pcbnew.KIID_PATH(f"/{tstamp}"))
+            except Exception:
+                pass
     
-    def _assign_nets(self, board, netlist_root: ET.Element, footprints: Dict):
+    def _assign_nets_fast(self, board, netlist_path: Path, footprints: Dict):
+        """Fast net assignment."""
         nets = {}
-        try:
-            for name, net in board.GetNetsByName().items():
-                nets[name] = net
-        except Exception:
-            pass
+        for name, net in board.GetNetsByName().items():
+            nets[name] = net
         
         def get_net(name):
-            if name in nets:
-                return nets[name]
-            try:
+            if name not in nets:
                 ni = pcbnew.NETINFO_ITEM(board, name)
                 board.Add(ni)
                 nets[name] = ni
-                return ni
-            except Exception:
-                return None
+            return nets[name]
         
-        for net_elem in netlist_root.findall(".//nets/net"):
-            net_name = net_elem.get("name", "")
-            if not net_name:
-                continue
-            
-            ni = get_net(net_name)
-            if not ni:
-                continue
-            
-            for node in net_elem.findall("node"):
-                ref, pin = node.get("ref", ""), node.get("pin", "")
-                fp = footprints.get(ref)
-                if fp:
-                    try:
-                        pad = fp.FindPadByNumber(pin)
-                        if pad:
-                            pad.SetNet(ni)
-                    except Exception:
-                        pass
+        # Parse nets section
+        for event, elem in ET.iterparse(str(netlist_path), events=["end"]):
+            if elem.tag == "net":
+                net_name = elem.get("name", "")
+                if net_name:
+                    ni = get_net(net_name)
+                    for node in elem.findall("node"):
+                        ref, pin = node.get("ref", ""), node.get("pin", "")
+                        fp = footprints.get(ref)
+                        if fp:
+                            pad = fp.FindPadByNumber(pin)
+                            if pad: pad.SetNet(ni)
+                elem.clear()
     
     # -------------------------------------------------------------------------
     # Status
     # -------------------------------------------------------------------------
     
-    def get_schematic_components(self) -> Dict[str, dict]:
-        netlist = self._export_netlist()
-        if not netlist:
-            return {}
-        
-        try:
-            comps, _ = self._parse_netlist(netlist)
-            netlist.unlink()
-            return comps
-        except Exception:
-            return {}
-    
     def get_status(self) -> Tuple[Dict[str, str], Set[str], int]:
-        """
-        Returns: (placed_dict, unplaced_set, total_valid)
-        placed_dict: {ref: board_name}
-        """
         placed_raw = self.scan_all_boards()
         placed = {ref: board for ref, (board, _) in placed_raw.items()}
         
-        all_comps = self.get_schematic_components()
-        valid = {r for r, i in all_comps.items() if not i["dnp"] and not i["exclude"]}
-        unplaced = valid - set(placed.keys())
+        netlist = self._export_netlist()
+        if not netlist: return placed, set(), len(placed)
         
-        return placed, unplaced, len(valid)
+        comps = self._parse_netlist_fast(netlist)
+        try: netlist.unlink()
+        except Exception: pass
+        
+        valid = {r for r, i in comps.items() if not i["dnp"] and not i["exclude"]}
+        return placed, valid - set(placed.keys()), len(valid)
 
 
 # ============================================================================
-# UI Dialogs
+# UI Components
 # ============================================================================
+
+class ProgressDialog(wx.Dialog):
+    """Non-modal progress dialog."""
+    
+    def __init__(self, parent, title="Working..."):
+        super().__init__(parent, title=title, size=(400, 120), style=wx.CAPTION)
+        
+        panel = wx.Panel(self)
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        self.label = wx.StaticText(panel, label="Initializing...")
+        sizer.Add(self.label, 0, wx.ALL | wx.EXPAND, 15)
+        
+        self.gauge = wx.Gauge(panel, range=100)
+        sizer.Add(self.gauge, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, 15)
+        
+        panel.SetSizer(sizer)
+        self.Centre()
+    
+    def update(self, percent: int, message: str):
+        self.gauge.SetValue(percent)
+        self.label.SetLabel(message)
+        wx.Yield()
+
+
+class PortDialog(wx.Dialog):
+    """Dialog for managing ports on a board."""
+    
+    def __init__(self, parent, board: BoardConfig):
+        super().__init__(parent, title=f"Ports - {board.name}", size=(500, 400),
+                        style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        self.board = board
+        self.ports = dict(board.ports)  # Working copy
+        
+        panel = wx.Panel(self)
+        main = wx.BoxSizer(wx.VERTICAL)
+        
+        # List
+        self.list = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
+        self.list.InsertColumn(0, "Name", width=120)
+        self.list.InsertColumn(1, "Net", width=120)
+        self.list.InsertColumn(2, "Side", width=80)
+        self.list.InsertColumn(3, "Position", width=80)
+        main.Add(self.list, 1, wx.EXPAND | wx.ALL, 10)
+        
+        # Buttons
+        btn_row = wx.BoxSizer(wx.HORIZONTAL)
+        for label, handler in [("Add", self.on_add), ("Edit", self.on_edit), ("Remove", self.on_remove)]:
+            btn = wx.Button(panel, label=label)
+            btn.Bind(wx.EVT_BUTTON, handler)
+            btn_row.Add(btn, 0, wx.RIGHT, 5)
+        main.Add(btn_row, 0, wx.LEFT | wx.BOTTOM, 10)
+        
+        # Dialog buttons
+        main.Add(wx.StaticLine(panel), 0, wx.EXPAND | wx.ALL, 5)
+        btns = wx.StdDialogButtonSizer()
+        btn_ok = wx.Button(panel, wx.ID_OK)
+        btn_ok.Bind(wx.EVT_BUTTON, self.on_ok)
+        btns.AddButton(btn_ok)
+        btns.AddButton(wx.Button(panel, wx.ID_CANCEL))
+        btns.Realize()
+        main.Add(btns, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        
+        panel.SetSizer(main)
+        self._refresh()
+    
+    def _refresh(self):
+        self.list.DeleteAllItems()
+        for name, port in sorted(self.ports.items()):
+            idx = self.list.InsertItem(self.list.GetItemCount(), name)
+            self.list.SetItem(idx, 1, port.net)
+            self.list.SetItem(idx, 2, port.side)
+            self.list.SetItem(idx, 3, f"{port.position:.2f}")
+    
+    def on_add(self, event):
+        dlg = PortEditDialog(self, PortDef(name="NewPort"))
+        if dlg.ShowModal() == wx.ID_OK:
+            self.ports[dlg.port.name] = dlg.port
+            self._refresh()
+        dlg.Destroy()
+    
+    def on_edit(self, event):
+        idx = self.list.GetFirstSelected()
+        if idx < 0: return
+        name = self.list.GetItemText(idx)
+        port = self.ports.get(name)
+        if port:
+            dlg = PortEditDialog(self, port)
+            if dlg.ShowModal() == wx.ID_OK:
+                del self.ports[name]
+                self.ports[dlg.port.name] = dlg.port
+                self._refresh()
+            dlg.Destroy()
+    
+    def on_remove(self, event):
+        name = self._get_selected()
+        if not name:
+            return
+        
+        board = self.manager.config.boards.get(name)
+        if not board:
+            return
+        
+        if wx.MessageBox(f"Remove '{name}'?\n\nThis will delete the board folder and all files.", 
+                        "Confirm", wx.YES_NO | wx.ICON_WARNING) == wx.YES:
+            # Delete the board folder
+            pcb_path = self.manager.project_dir / board.pcb_path
+            board_dir = pcb_path.parent
+            if board_dir.exists() and BOARDS_DIR in str(board_dir):
+                try:
+                    shutil.rmtree(board_dir)
+                except Exception as e:
+                    wx.MessageBox(f"Could not delete folder: {e}", "Warning", wx.ICON_WARNING)
+            
+            # Remove from config
+            del self.manager.config.boards[name]
+            self.manager.save_config()
+            self._refresh()
+
+    def on_ok(self, event):
+        self.board.ports = self.ports
+        self.EndModal(wx.ID_OK)
+
+
+class PortEditDialog(wx.Dialog):
+    """Edit a single port."""
+    
+    def __init__(self, parent, port: PortDef):
+        super().__init__(parent, title="Edit Port", size=(400, 500))
+        self.port = port
+        
+        panel = wx.Panel(self)
+        grid = wx.FlexGridSizer(4, 2, 8, 8)
+        grid.AddGrowableCol(1)
+        
+        grid.Add(wx.StaticText(panel, label="Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.txt_name = wx.TextCtrl(panel, value=port.name)
+        grid.Add(self.txt_name, 1, wx.EXPAND)
+        
+        grid.Add(wx.StaticText(panel, label="Net:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.txt_net = wx.TextCtrl(panel, value=port.net)
+        grid.Add(self.txt_net, 1, wx.EXPAND)
+        
+        grid.Add(wx.StaticText(panel, label="Side:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.choice_side = wx.Choice(panel, choices=["left", "right", "top", "bottom"])
+        self.choice_side.SetStringSelection(port.side)
+        grid.Add(self.choice_side, 1, wx.EXPAND)
+        
+        grid.Add(wx.StaticText(panel, label="Position (0-1):"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.spin_pos = wx.SpinCtrlDouble(panel, value=str(port.position), min=0, max=1, inc=0.1)
+        grid.Add(self.spin_pos, 1, wx.EXPAND)
+        
+        main = wx.BoxSizer(wx.VERTICAL)
+        main.Add(grid, 1, wx.EXPAND | wx.ALL, 15)
+        
+        btns = wx.StdDialogButtonSizer()
+        btn_ok = wx.Button(panel, wx.ID_OK)
+        btn_ok.Bind(wx.EVT_BUTTON, self.on_ok)
+        btns.AddButton(btn_ok)
+        btns.AddButton(wx.Button(panel, wx.ID_CANCEL))
+        btns.Realize()
+        main.Add(btns, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        
+        panel.SetSizer(main)
+    
+    def on_ok(self, event):
+        self.port = PortDef(
+            name=self.txt_name.GetValue().strip(),
+            net=self.txt_net.GetValue().strip(),
+            side=self.choice_side.GetStringSelection(),
+            position=self.spin_pos.GetValue()
+        )
+        self.EndModal(wx.ID_OK)
+
 
 class NewBoardDialog(wx.Dialog):
     def __init__(self, parent, existing: Set[str]):
-        super().__init__(parent, title="Create New Sub-Board", 
-                        size=(450, 200),
-                        style=wx.DEFAULT_DIALOG_STYLE)
+        super().__init__(parent, title="New Board", size=(400, 250))
         self.existing = existing
         self.result_name = ""
         self.result_desc = ""
         
         panel = wx.Panel(self)
-        main = wx.BoxSizer(wx.VERTICAL)
+        grid = wx.FlexGridSizer(2, 2, 8, 8)
+        grid.AddGrowableCol(1)
         
-        # Form
-        grid = wx.FlexGridSizer(2, 2, 10, 10)
-        grid.AddGrowableCol(1, 1)
-        
-        grid.Add(wx.StaticText(panel, label="Board Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_name = wx.TextCtrl(panel, size=(280, -1))
+        grid.Add(wx.StaticText(panel, label="Name:"), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.txt_name = wx.TextCtrl(panel)
         grid.Add(self.txt_name, 1, wx.EXPAND)
         
         grid.Add(wx.StaticText(panel, label="Description:"), 0, wx.ALIGN_CENTER_VERTICAL)
-        self.txt_desc = wx.TextCtrl(panel, size=(280, -1))
+        self.txt_desc = wx.TextCtrl(panel)
         grid.Add(self.txt_desc, 1, wx.EXPAND)
         
-        main.Add(grid, 0, wx.EXPAND | wx.ALL, 20)
+        main = wx.BoxSizer(wx.VERTICAL)
+        main.Add(grid, 0, wx.EXPAND | wx.ALL, 15)
         
-        # Info
-        info = wx.StaticText(panel, label="PCB will be created in: boards/<name>/<name>.kicad_pcb")
-        info.SetForegroundColour(wx.Colour(100, 100, 100))
-        main.Add(info, 0, wx.LEFT | wx.BOTTOM, 20)
-        
-        main.AddStretchSpacer()
-        
-        # Buttons
         btns = wx.StdDialogButtonSizer()
         btn_ok = wx.Button(panel, wx.ID_OK, "Create")
-        btn_cancel = wx.Button(panel, wx.ID_CANCEL)
         btn_ok.Bind(wx.EVT_BUTTON, self.on_ok)
-        btn_ok.SetDefault()
         btns.AddButton(btn_ok)
-        btns.AddButton(btn_cancel)
+        btns.AddButton(wx.Button(panel, wx.ID_CANCEL))
         btns.Realize()
-        main.Add(btns, 0, wx.EXPAND | wx.ALL, 15)
+        main.Add(btns, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
         
         panel.SetSizer(main)
-        self.txt_name.SetFocus()
     
     def on_ok(self, event):
         name = self.txt_name.GetValue().strip()
         if not name:
-            wx.MessageBox("Enter a board name.", "Error", wx.ICON_ERROR)
+            wx.MessageBox("Enter a name.", "Error", wx.ICON_ERROR)
             return
         if name in self.existing:
-            wx.MessageBox(f"'{name}' already exists.", "Error", wx.ICON_ERROR)
+            wx.MessageBox("Name exists.", "Error", wx.ICON_ERROR)
             return
-        if not name[0].isalpha():
-            wx.MessageBox("Name must start with a letter.", "Error", wx.ICON_ERROR)
-            return
-        
         self.result_name = name
         self.result_desc = self.txt_desc.GetValue().strip()
         self.EndModal(wx.ID_OK)
 
 
+class ConnectivityReportDialog(wx.Dialog):
+    """Show connectivity/DRC report."""
+    
+    def __init__(self, parent, report: Dict):
+        super().__init__(parent, title="Connectivity Report", size=(600, 450),
+                        style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
+        
+        panel = wx.Panel(self)
+        main = wx.BoxSizer(wx.VERTICAL)
+        
+        # Summary
+        errors = report.get("errors", [])
+        boards = report.get("boards", {})
+        
+        total_violations = sum(b.get("violations", 0) for b in boards.values())
+        summary = f"Boards checked: {len(boards)} | DRC violations: {total_violations} | Errors: {len(errors)}"
+        
+        lbl = wx.StaticText(panel, label=summary)
+        lbl.SetFont(lbl.GetFont().Bold())
+        main.Add(lbl, 0, wx.ALL, 10)
+        
+        # Details
+        self.text = wx.TextCtrl(panel, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
+        self.text.SetFont(wx.Font(9, wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+        
+        lines = []
+        for board_name, data in boards.items():
+            lines.append(f"=== {board_name} ===")
+            lines.append(f"Violations: {data.get('violations', 0)}")
+            for v in data.get("details", []):
+                lines.append(f"  - {v.get('type', 'unknown')}: {v.get('description', '')[:80]}")
+            lines.append("")
+        
+        if errors:
+            lines.append("=== ERRORS ===")
+            for e in errors:
+                lines.append(f"  {e}")
+        
+        self.text.SetValue("\n".join(lines))
+        main.Add(self.text, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        
+        btn_close = wx.Button(panel, wx.ID_CLOSE)
+        btn_close.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CLOSE))
+        main.Add(btn_close, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+        
+        panel.SetSizer(main)
+
+
 class StatusDialog(wx.Dialog):
     def __init__(self, parent, manager: MultiBoardManager):
-        super().__init__(parent, title="Component Status", size=(650, 500),
+        super().__init__(parent, title="Status", size=(550, 400),
                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         self.manager = manager
         
         panel = wx.Panel(self)
         main = wx.BoxSizer(wx.VERTICAL)
         
-        self.lbl = wx.StaticText(panel, label="Scanning boards...")
+        self.lbl = wx.StaticText(panel, label="Loading...")
         self.lbl.SetFont(self.lbl.GetFont().Bold())
         main.Add(self.lbl, 0, wx.ALL, 10)
         
-        nb = wx.Notebook(panel)
+        self.tree = wx.TreeCtrl(panel, style=wx.TR_DEFAULT_STYLE | wx.TR_HIDE_ROOT)
+        main.Add(self.tree, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
         
-        # By Board tab
-        p0 = wx.Panel(nb)
-        s0 = wx.BoxSizer(wx.VERTICAL)
-        self.tree = wx.TreeCtrl(p0, style=wx.TR_DEFAULT_STYLE | wx.TR_HIDE_ROOT)
-        s0.Add(self.tree, 1, wx.EXPAND | wx.ALL, 5)
-        p0.SetSizer(s0)
-        nb.AddPage(p0, "By Board")
-        
-        # Unplaced tab
-        p2 = wx.Panel(nb)
-        s2 = wx.BoxSizer(wx.VERTICAL)
-        self.list_unplaced = wx.ListCtrl(p2, style=wx.LC_REPORT)
-        self.list_unplaced.InsertColumn(0, "Reference", width=120)
-        self.list_unplaced.InsertColumn(1, "Value", width=150)
-        self.list_unplaced.InsertColumn(2, "Footprint", width=250)
-        s2.Add(self.list_unplaced, 1, wx.EXPAND | wx.ALL, 5)
-        p2.SetSizer(s2)
-        nb.AddPage(p2, "Unplaced")
-        
-        main.Add(nb, 1, wx.EXPAND | wx.ALL, 10)
-        
-        btns = wx.BoxSizer(wx.HORIZONTAL)
-        btn_refresh = wx.Button(panel, label="Refresh")
-        btn_refresh.Bind(wx.EVT_BUTTON, lambda e: self.refresh())
         btn_close = wx.Button(panel, wx.ID_CLOSE)
         btn_close.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CLOSE))
-        btns.Add(btn_refresh, 0, wx.RIGHT, 10)
-        btns.AddStretchSpacer()
-        btns.Add(btn_close, 0)
-        main.Add(btns, 0, wx.EXPAND | wx.ALL, 10)
+        main.Add(btn_close, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
         
         panel.SetSizer(main)
-        wx.CallAfter(self.refresh)
+        wx.CallAfter(self._load)
     
-    def refresh(self):
+    def _load(self):
         placed, unplaced, total = self.manager.get_status()
-        comps = self.manager.get_schematic_components()
-        
         self.lbl.SetLabel(f"Total: {total} | Placed: {len(placed)} | Unplaced: {len(unplaced)}")
         
-        # Tree by board
         self.tree.DeleteAllItems()
-        root = self.tree.AddRoot("Boards")
+        root = self.tree.AddRoot("Status")
         
+        # By board
         by_board = {}
         for ref, board in placed.items():
-            if board not in by_board:
-                by_board[board] = []
-            by_board[board].append(ref)
+            by_board.setdefault(board, []).append(ref)
         
         for board_name in sorted(by_board.keys()):
             refs = sorted(by_board[board_name])
-            board_node = self.tree.AppendItem(root, f"{board_name} ({len(refs)} components)")
-            for ref in refs:
-                self.tree.AppendItem(board_node, ref)
+            node = self.tree.AppendItem(root, f"{board_name} ({len(refs)})")
+            for ref in refs[:50]:  # Limit display
+                self.tree.AppendItem(node, ref)
+            if len(refs) > 50:
+                self.tree.AppendItem(node, f"... and {len(refs)-50} more")
+        
+        # Unplaced
+        if unplaced:
+            node = self.tree.AppendItem(root, f"Unplaced ({len(unplaced)})")
+            for ref in sorted(unplaced)[:50]:
+                self.tree.AppendItem(node, ref)
         
         self.tree.ExpandAll()
-        
-        # Unplaced list
-        self.list_unplaced.DeleteAllItems()
-        for ref in sorted(unplaced):
-            info = comps.get(ref, {})
-            idx = self.list_unplaced.InsertItem(self.list_unplaced.GetItemCount(), ref)
-            self.list_unplaced.SetItem(idx, 1, info.get("value", ""))
-            self.list_unplaced.SetItem(idx, 2, info.get("footprint", ""))
 
 
 class MainDialog(wx.Dialog):
     def __init__(self, parent, board: pcbnew.BOARD):
-        super().__init__(parent, title="Multi-Board Manager v9",
-                        size=(750, 520),
+        super().__init__(parent, title="Multi-Board Manager", size=(680, 480),
                         style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         
-        self.pcb = board
         path = board.GetFileName()
         self.manager = MultiBoardManager(Path(path).parent if path else Path.cwd())
+        self.executor = ThreadPoolExecutor(max_workers=1)
         
         self._build_ui()
         self._refresh()
+        
+        self.Bind(wx.EVT_CLOSE, self.on_close)
     
     def _build_ui(self):
         panel = wx.Panel(self)
+        panel.SetBackgroundColour(wx.Colour(250, 250, 250))
+        
         main = wx.BoxSizer(wx.VERTICAL)
         
         # Header
-        header = wx.BoxSizer(wx.HORIZONTAL)
-        title = wx.StaticText(panel, label="Multi-Board Manager")
-        title.SetFont(wx.Font(14, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
-        header.Add(title, 0, wx.ALIGN_CENTER_VERTICAL)
-        main.Add(header, 0, wx.ALL, 10)
-        
-        # Info box
-        info_box = wx.StaticBox(panel, label="How it works")
-        info_sizer = wx.StaticBoxSizer(info_box, wx.VERTICAL)
-        info_text = (
-            "• Update adds all components NOT already on another board\n"
-            "• Delete components in PCBnew to make them available for other boards\n"
-            "• Schematic changes (values, footprints) sync automatically on update"
-        )
-        info_lbl = wx.StaticText(panel, label=info_text)
-        info_lbl.SetForegroundColour(wx.Colour(60, 60, 60))
-        info_sizer.Add(info_lbl, 0, wx.ALL, 5)
-        main.Add(info_sizer, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        header = wx.StaticText(panel, label="Multi-Board Manager")
+        header.SetFont(wx.Font(13, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_BOLD))
+        main.Add(header, 0, wx.ALL, 12)
         
         # Board list
-        lbl = wx.StaticText(panel, label="Sub-Boards:")
-        lbl.SetFont(lbl.GetFont().Bold())
-        main.Add(lbl, 0, wx.LEFT, 10)
+        self.list = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL | wx.BORDER_SIMPLE)
+        self.list.InsertColumn(0, "Board", width=120)
+        self.list.InsertColumn(1, "Path", width=220)
+        self.list.InsertColumn(2, "Components", width=80)
+        self.list.InsertColumn(3, "Ports", width=60)
+        self.list.InsertColumn(4, "Description", width=140)
+        self.list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_open)
+        main.Add(self.list, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 12)
         
-        self.list = wx.ListCtrl(panel, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
-        self.list.InsertColumn(0, "Name", width=130)
-        self.list.InsertColumn(1, "PCB Path", width=300)
-        self.list.InsertColumn(2, "Placed", width=70)
-        self.list.InsertColumn(3, "Description", width=150)
-        main.Add(self.list, 1, wx.EXPAND | wx.ALL, 10)
+        # Button rows
+        btn_panel = wx.Panel(panel)
+        btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
-        # Buttons row 1
-        row1 = wx.BoxSizer(wx.HORIZONTAL)
+        buttons = [
+            ("New", self.on_new), ("Remove", self.on_remove), ("|", None),
+            ("Open", self.on_open), ("Update", self.on_update), ("|", None),
+            ("Ports", self.on_ports), ("Check", self.on_check), ("Status", self.on_status)
+        ]
         
-        self.btn_new = wx.Button(panel, label="New Board")
-        self.btn_remove = wx.Button(panel, label="Remove")
-        self.btn_open = wx.Button(panel, label="Open PCB")
-        self.btn_update = wx.Button(panel, label="Update from Schematic")
+        for label, handler in buttons:
+            if label == "|":
+                btn_sizer.AddSpacer(15)
+            else:
+                btn = wx.Button(btn_panel, label=label, size=(70, -1))
+                if handler: btn.Bind(wx.EVT_BUTTON, handler)
+                btn_sizer.Add(btn, 0, wx.RIGHT, 4)
         
-        self.btn_new.Bind(wx.EVT_BUTTON, self.on_new)
-        self.btn_remove.Bind(wx.EVT_BUTTON, self.on_remove)
-        self.btn_open.Bind(wx.EVT_BUTTON, self.on_open)
-        self.btn_update.Bind(wx.EVT_BUTTON, self.on_update)
+        btn_sizer.AddStretchSpacer()
+        btn_close = wx.Button(btn_panel, label="Close", size=(70, -1))
+        btn_close.Bind(wx.EVT_BUTTON, lambda e: self.Close())
+        btn_sizer.Add(btn_close, 0)
         
-        row1.Add(self.btn_new, 0, wx.RIGHT, 5)
-        row1.Add(self.btn_remove, 0, wx.RIGHT, 20)
-        row1.Add(self.btn_open, 0, wx.RIGHT, 5)
-        row1.Add(self.btn_update, 0)
-        main.Add(row1, 0, wx.LEFT | wx.BOTTOM, 10)
-        
-        main.Add(wx.StaticLine(panel), 0, wx.EXPAND | wx.ALL, 5)
-        
-        # Row 2
-        row2 = wx.BoxSizer(wx.HORIZONTAL)
-        
-        self.btn_status = wx.Button(panel, label="Status")
-        self.btn_regen = wx.Button(panel, label="Regen Block")
-        self.btn_log = wx.Button(panel, label="Log")
-        btn_close = wx.Button(panel, label="Close")
-        
-        self.btn_status.Bind(wx.EVT_BUTTON, self.on_status)
-        self.btn_regen.Bind(wx.EVT_BUTTON, self.on_regen)
-        self.btn_log.Bind(wx.EVT_BUTTON, self.on_log)
-        btn_close.Bind(wx.EVT_BUTTON, lambda e: self.EndModal(wx.ID_CLOSE))
-        
-        row2.Add(self.btn_status, 0, wx.RIGHT, 5)
-        row2.Add(self.btn_regen, 0, wx.RIGHT, 5)
-        row2.Add(self.btn_log, 0)
-        row2.AddStretchSpacer()
-        row2.Add(btn_close, 0)
-        main.Add(row2, 0, wx.EXPAND | wx.ALL, 10)
+        btn_panel.SetSizer(btn_sizer)
+        main.Add(btn_panel, 0, wx.EXPAND | wx.ALL, 12)
         
         panel.SetSizer(main)
-        self.list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_open)
     
     def _refresh(self):
         self.list.DeleteAllItems()
         
-        # Scan boards for component counts
+        # Quick scan for component counts
         placed = self.manager.scan_all_boards()
         counts = {}
         for ref, (board, _) in placed.items():
@@ -1304,7 +1213,8 @@ class MainDialog(wx.Dialog):
             idx = self.list.InsertItem(self.list.GetItemCount(), name)
             self.list.SetItem(idx, 1, board.pcb_path)
             self.list.SetItem(idx, 2, str(counts.get(name, 0)))
-            self.list.SetItem(idx, 3, board.description)
+            self.list.SetItem(idx, 3, str(len(board.ports)))
+            self.list.SetItem(idx, 4, board.description)
     
     def _get_selected(self) -> Optional[str]:
         idx = self.list.GetFirstSelected()
@@ -1315,12 +1225,7 @@ class MainDialog(wx.Dialog):
         if dlg.ShowModal() == wx.ID_OK:
             ok, msg = self.manager.create_board(dlg.result_name, dlg.result_desc)
             if ok:
-                wx.MessageBox(
-                    f"Created: {dlg.result_name}\n\n"
-                    f"PCB: {msg}\n\n"
-                    "Click 'Update from Schematic' to add components.",
-                    "Success", wx.ICON_INFORMATION
-                )
+                wx.MessageBox(f"Created: {dlg.result_name}\n\nUpdate to add components.", "Success", wx.ICON_INFORMATION)
                 self._refresh()
             else:
                 wx.MessageBox(msg, "Error", wx.ICON_ERROR)
@@ -1330,96 +1235,104 @@ class MainDialog(wx.Dialog):
         name = self._get_selected()
         if not name:
             return
-        if wx.MessageBox(f"Remove '{name}'?\n\nPCB files will NOT be deleted.", 
-                        "Confirm", wx.YES_NO | wx.ICON_QUESTION) == wx.YES:
-            del self.manager.config.boards[name]
-            self.manager.save_config()
-            self._refresh()
-    
-    def on_open(self, event):
-        name = self._get_selected()
-        if not name:
-            return
         
         board = self.manager.config.boards.get(name)
         if not board:
             return
         
-        pcb = self.manager.project_dir / board.pcb_path
-        if not pcb.exists():
-            wx.MessageBox(f"PCB not found: {board.pcb_path}", "Error", wx.ICON_ERROR)
-            return
+        if wx.MessageBox(f"Remove '{name}'?\n\nThis will delete the board folder and all files.", 
+                        "Confirm", wx.YES_NO | wx.ICON_WARNING) == wx.YES:
+            # Delete the board folder
+            pcb_path = self.manager.project_dir / board.pcb_path
+            board_dir = pcb_path.parent
+            if board_dir.exists() and BOARDS_DIR in str(board_dir):
+                try:
+                    shutil.rmtree(board_dir)
+                except Exception as e:
+                    wx.MessageBox(f"Could not delete folder: {e}", "Warning", wx.ICON_WARNING)
+            
+            # Remove from config
+            del self.manager.config.boards[name]
+            self.manager.save_config()
+            self._refresh()
+
+    def on_open(self, event):
+        name = self._get_selected()
+        if not name: return
         
-        try:
-            if os.name == "nt":
-                os.startfile(str(pcb))
-            else:
-                subprocess.Popen(["pcbnew", str(pcb)])
-        except Exception as e:
-            wx.MessageBox(f"Failed: {e}", "Error", wx.ICON_ERROR)
+        board = self.manager.config.boards.get(name)
+        if not board: return
+        
+        pcb = self.manager.project_dir / board.pcb_path
+        if pcb.exists():
+            if os.name == "nt": os.startfile(str(pcb))
+            else: subprocess.Popen(["pcbnew", str(pcb)])
     
     def on_update(self, event):
         name = self._get_selected()
         if not name:
-            wx.MessageBox("Select a board first.", "Info", wx.ICON_INFORMATION)
+            wx.MessageBox("Select a board.", "Info", wx.ICON_INFORMATION)
             return
         
-        # Quick preview of what will happen
-        placed = self.manager.scan_all_boards()
-        comps = self.manager.get_schematic_components()
+        progress = ProgressDialog(self, f"Updating {name}")
+        progress.Show()
         
-        on_this = sum(1 for r, (b, _) in placed.items() if b == name)
-        on_other = sum(1 for r, (b, _) in placed.items() if b != name)
-        available = len([r for r, i in comps.items() 
-                        if not i["dnp"] and not i["exclude"] and r not in placed])
+        def do_update():
+            return self.manager.update_board(name, progress_callback=lambda p, m: wx.CallAfter(progress.update, p, m))
         
-        msg = (
-            f"Update '{name}'?\n\n"
-            f"• Already on this board: {on_this} (will update)\n"
-            f"• On other boards: {on_other} (excluded)\n"
-            f"• Available to add: {available}\n\n"
-            f"Footprint changes will be detected and replaced."
-        )
+        def on_done(future):
+            wx.CallAfter(progress.Destroy)
+            try:
+                ok, msg = future.result()
+                wx.CallAfter(lambda: wx.MessageBox(msg, "Complete" if ok else "Failed", 
+                            wx.ICON_INFORMATION if ok else wx.ICON_ERROR))
+                wx.CallAfter(self._refresh)
+            except Exception as e:
+                wx.CallAfter(lambda: wx.MessageBox(str(e), "Error", wx.ICON_ERROR))
         
-        if wx.MessageBox(msg, "Confirm", wx.YES_NO | wx.ICON_QUESTION) != wx.YES:
-            return
-        
-        wx.BeginBusyCursor()
-        try:
-            ok, result = self.manager.update_board(name)
-        finally:
-            wx.EndBusyCursor()
-        
-        if ok:
-            wx.MessageBox(result, "Complete", wx.ICON_INFORMATION)
-        else:
-            wx.MessageBox(result, "Failed", wx.ICON_ERROR)
-        
-        self._refresh()
+        future = self.executor.submit(do_update)
+        future.add_done_callback(on_done)
     
-    def on_status(self, event):
-        dlg = StatusDialog(self, self.manager)
-        dlg.ShowModal()
-        dlg.Destroy()
-    
-    def on_regen(self, event):
+    def on_ports(self, event):
         name = self._get_selected()
-        if not name:
-            return
+        if not name: return
         
         board = self.manager.config.boards.get(name)
-        if board:
+        if not board: return
+        
+        dlg = PortDialog(self, board)
+        if dlg.ShowModal() == wx.ID_OK:
             self.manager._generate_block_footprint(board)
-            wx.MessageBox(f"Regenerated: {BLOCK_LIB_NAME}:Block_{name}", "Done", wx.ICON_INFORMATION)
+            self.manager.save_config()
+            wx.MessageBox("Ports updated. Block footprint regenerated.", "Done", wx.ICON_INFORMATION)
+            self._refresh()
+        dlg.Destroy()
     
-    def on_log(self, event):
-        try:
-            if os.name == "nt":
-                os.startfile(str(self.manager.log_path))
-            else:
-                subprocess.Popen(["xdg-open", str(self.manager.log_path)])
-        except Exception:
-            pass
+    def on_check(self, event):
+        progress = ProgressDialog(self, "Checking connectivity")
+        progress.Show()
+        
+        def do_check():
+            return self.manager.check_connectivity(
+                progress_callback=lambda p, m: wx.CallAfter(progress.update, p, m))
+        
+        def on_done(future):
+            wx.CallAfter(progress.Destroy)
+            try:
+                report = future.result()
+                wx.CallAfter(lambda: ConnectivityReportDialog(self, report).ShowModal())
+            except Exception as e:
+                wx.CallAfter(lambda: wx.MessageBox(str(e), "Error", wx.ICON_ERROR))
+        
+        future = self.executor.submit(do_check)
+        future.add_done_callback(on_done)
+    
+    def on_status(self, event):
+        StatusDialog(self, self.manager).ShowModal()
+    
+    def on_close(self, event):
+        self.executor.shutdown(wait=False)
+        self.Destroy()
 
 
 # ============================================================================
@@ -1445,7 +1358,7 @@ class MultiBoardPlugin(pcbnew.ActionPlugin):
             dlg.ShowModal()
             dlg.Destroy()
         except Exception as e:
-            wx.MessageBox(f"Error: {e}", "Error", wx.ICON_ERROR)
+            wx.MessageBox(f"Error: {e}\n\n{traceback.format_exc()}", "Error", wx.ICON_ERROR)
 
 
 MultiBoardPlugin().register()
