@@ -996,9 +996,9 @@ class MainDialog(BaseDialog):
         # Column widths
         self.grid.SetColSize(0, 70)
         self.grid.SetColSize(1, 140)
-        self.grid.SetColSize(2, 100)
+        self.grid.SetColSize(2, 120)
         self.grid.SetColSize(3, 60)
-        self.grid.SetColSize(4, 350)
+        self.grid.SetColSize(4, 450)
         self.grid.SetColSize(5, 280)
 
         self.grid.Bind(gridlib.EVT_GRID_SELECT_CELL, self._on_grid_select)
