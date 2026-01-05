@@ -1,8 +1,36 @@
 """
-Multi-Board PCB Manager - Data Models
-======================================
+Multi-Board PCB Manager - Configuration Data Model
+==================================================
 
-Data structures for project configuration, serialized to JSON.
+What this file is
+-----------------
+This file defines the JSON-shaped data we persist to disk in `.kicad_multiboard.json`.
+
+- They’re dataclasses, nothing fancy.
+- They only know how to serialize/deserialize themselves.
+- They don’t talk to KiCad, they don’t touch the filesystem, they don’t do UI.
+
+
+Big picture
+-----------
+ProjectConfig (top level)
+  └─ boards: Dict[str, BoardConfig]
+        └─ ports: Dict[str, PortDef]
+
+A 'board' here means a sub-PCB living under `boards/<name>/<name>.kicad_pcb`,
+but all boards share the same schematic (we hardlink that elsewhere in the
+manager).
+
+Ports
+-----
+Ports are “inter-board connection points”:
+- conceptually: connector pins, flex tails, board-to-board headers, etc.
+- in practice: they become pads on a generated “block footprint” so you can
+  represent boards as blocks in an assembly/top-level PCB.
+
+The UI lets you place ports on any edge using:
+- `side`: left/right/top/bottom
+- `position`: 0.0 → 1.0 along that edge
 
 Author: Eliot
 License: MIT

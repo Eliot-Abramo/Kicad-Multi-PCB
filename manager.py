@@ -1,12 +1,49 @@
 """
-Multi-Board PCB Manager - Core Manager (Optimized)
+Multi-Board PCB Manager - Core Manager
 ===================================================
 
-High-performance implementation with:
-- Footprint caching
-- Optimized XML parsing
-- Parallel operations where safe
-- Component auto-packing
+This is the engine of the plugin.
+
+What the manager is responsible for
+-----------------------------------
+- Discover the real project root even when you open a sub-board PCB.
+- Load/save the multiboard JSON config (`.kicad_multiboard.json`).
+- Create new boards under `boards/<name>/...` with minimal KiCad project files.
+- Keep every board sharing the same schematic (hardlink/symlink/copy fallback).
+- Update a specific board from the schematic by exporting + parsing a netlist.
+- Assign nets on the PCB (using the netlist)
+- Generate “block footprints” that represent each board as a neat rectangle
+  (plus port pads) for a top-level assembly layout.
+- Run per-board DRC via `kicad-cli` 
+
+Important KiCad/Python points
+-----------------------------------------------------------------
+1) pcbnew SWIG objects are very wierd to work with
+   Loading a footprint and reusing/cloning it across operations can crash KiCad
+   or do wierd things (ownership, lifetime, SWIG proxy weirdness). That’s why
+   FootprintResolver always loads a fresh footprint per use. This is slower yes,
+   but more reliable.
+
+2) Updating a PCB while it’s open corrupt files or crashes kicad.
+   kicad uses lock files next to the PCB. We treat those as a hard no:
+   if a board looks open anywhere, we don’t touch it. Will focus on changing
+   this for future versions, but currently not a priority.
+
+3) Netlist format quirks.
+   KiCad exports boolean properties in a way that’s easy to misread:
+   an empty value can still mean TRUE. That matters for things like
+   “Exclude from board” and DNP.
+
+Performance design
+-------------------------------------------------------
+- Cache scan results: scanning every board’s footprints repeatedly is slow.
+- Use lxml when available: netlist parsing is a slow and unefficient.
+- Avoid repeated library lookups: cache lib paths and failed footprint loads.
+- Keep filesystem touches minimal: KiCad + network drives gets complicated fast.
+
+If you’re looking for architecture:
+- FootprintResolver: “give me a footprint, don’t crash”.
+- MultiBoardManager: project lifecycle + operations.
 
 Author: Eliot
 License: MIT
@@ -23,7 +60,6 @@ from pathlib import Path
 from typing import Optional, Dict, List, Set, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor
 import math
-
 import pcbnew
 
 from .constants import (
@@ -38,12 +74,20 @@ from .constants import (
 )
 from .config import ProjectConfig, BoardConfig, PortDef
 
-
 # Pre-compiled regex patterns for performance
 RE_FP_LIB_ENTRY = re.compile(r'\(name\s*"([^"]+)"\).*?\(uri\s*"([^"]+)"\)', re.DOTALL)
 RE_SHEET_REF = re.compile(r'"([^"]+\.kicad_sch)"')
 
-
+# =============================================================================
+# FootprintResolver
+# =============================================================================
+# Footprint loading is one of the main places KiCad plugins fall over.
+# The pcbnew API is SWIG-wrapped, and object lifetime/ownership can be
+# delicate. The safest pattern I’ve found is:
+#   - cache library paths (cheap)
+#   - load footprints fresh every time (safe)
+#   - remember failures so we don’t keep hammering the disk
+#
 class FootprintResolver:
     """
     Footprint loading with library path resolution.
@@ -51,7 +95,6 @@ class FootprintResolver:
     Caches library paths (not footprints) to speed up lookups.
     Each footprint is loaded fresh to avoid KiCad SWIG issues.
     """
-    
     def __init__(self):
         self._lib_paths: Dict[str, Path] = {}
         self._kicad_share: Optional[Path] = None
@@ -111,6 +154,17 @@ class FootprintResolver:
         self._failed.clear()
 
 
+# =============================================================================
+# MultiBoardManager
+# =============================================================================
+# This class is intentionally big: it owns the project state, the caches,
+# and all the file/pcb operations.
+#
+# The UI never manipulates PCBs directly — it asks the manager to do it.
+# That separation is on purpose:
+#   dialogs.py  -> user interactions / progress reporting
+#   manager.py  -> actual work, with lots of guard rails
+#
 class MultiBoardManager:
     """
     Main controller for multiboard project management.
@@ -413,7 +467,7 @@ class MultiBoardManager:
         table_path.write_text(content, encoding="utf-8")
     
     # =========================================================================
-    # Block Footprints (Enhanced Visual Design)
+    # Block Footprints
     # =========================================================================
     
     def _generate_block_footprint(self, board: BoardConfig):
@@ -444,7 +498,7 @@ class MultiBoardManager:
         lines.append('    (effects (font (size 1.2 1.2) (thickness 0.2)))')
         lines.append('  )')
 
-        # --- Sexy rounded outlines (silk + fab) ---
+        # --- rounded outlines (silk + fab) ---
         r = max(1.0, min(3.0, w * 0.08, h * 0.08))
         inv_sqrt2 = 1.0 / math.sqrt(2.0)
 
@@ -625,7 +679,7 @@ class MultiBoardManager:
         self._ensure_lib_in_table(PORT_LIB_NAME, f"{PORT_LIB_NAME}.pretty")
     
     # =========================================================================
-    # PCB Scanning (Optimized)
+    # PCB Scanning
     # =========================================================================
     
     def scan_all_boards(self, force: bool = False) -> Dict[str, Tuple[str, str]]:
@@ -725,7 +779,7 @@ class MultiBoardManager:
         return report
     
     # =========================================================================
-    # Board Update (Optimized)
+    # Board Update
     # =========================================================================
     
     def update_board(self, board_name: str, progress_callback=None) -> Tuple[bool, str]:
@@ -749,6 +803,22 @@ class MultiBoardManager:
             )
 
         try:
+            # The update pipeline is linear on purpose. KiCad file formats
+            # don't allow for concurrent mutation.
+            #
+            # Rough flow:
+            #   1) Make sure the sub-board project files + schematic links exist
+            #   2) Scan all boards so we don’t double-place a ref
+            #   3) Export netlist from the shared schematic (kicad-cli)
+            #   4) Parse netlist into a {ref -> footprint/value/tstamp/skip}
+            #   5) Load target PCB
+            #   6) Update existing footprints (value, footprint swap if needed)
+            #   7) Add missing footprints and drop them in a grid near origin
+            #   8) Assign nets from the netlist
+            #   9) Save PCB
+            #
+            # Anything that fails should return a debug message
+            #
             # Step 1: Setup
             if progress_callback:
                 progress_callback(2, "Refreshing schematic links...")
@@ -1203,6 +1273,9 @@ class MultiBoardManager:
 
     # =========================================================================
     # Open-board detection (KiCad lock files)
+    # KiCad’s cross-instance signal is a lock file next to the open document.
+    # The naming pattern has varied over versions, so we check a few.
+
     # =========================================================================
     def _kicad_lock_paths(self, pcb_path: Path) -> List[Path]:
         """Return possible KiCad lock-file paths for a given board file.
