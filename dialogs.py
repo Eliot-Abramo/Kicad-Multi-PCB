@@ -1,14 +1,50 @@
 """
-Multi-Board PCB Manager - Professional UI Components (v11.0)
-=============================================================
+Multi-Board PCB Manager - wxPython UI
+====================================
 
-Production-quality wxPython dialogs with:
-- Original professional styling
-- Search/filter box
-- Context menus
-- Health reports
-- Diff views
-- PCB open detection
+This file is all UI. No PCB surgery should happen here.
+
+UI architecture
+---------------
+Design system:
+  Colors / Spacing / Fonts
+    A tiny “style guide” so the plugin looks consistent and not like random wx
+    widgets thrown together.
+
+BaseDialog:
+  A common base that handles escape-to-close, minimum size, background color.
+
+Custom widgets:
+  - IconButton: gives buttons a little unicode icon (cheap but effective).
+  - InfoBanner: “FYI” strip used for guidance messages.
+  - SectionHeader: title + subtitle for dialog sections.
+  - StatusIndicator: bottom status bar for the main dialog.
+  - SearchBox: filter input with a clear button.
+
+Dialogs:
+  - PortEditDialog / PortDialog: edit inter-board ports for a board.
+  - NewBoardDialog: create a sub-board (name + description).
+  - HealthReportDialog: show project/board health info from the manager.
+  - DiffViewDialog: compare board placements (refs present in each).
+  - ConnectivityReportDialog: show DRC/connectivity results from kicad-cli.
+  - StatusDialog: show placed/unplaced component refs.
+  - MainDialog: the main app UI (table of boards + toolbar actions).
+
+KiCad subtleties
+--------------------------------------------------------
+1) Plugin runs in KiCad’s UI process.
+   If we do heavy work synchronously, the whole KiCad window freezes.
+   That’s why long operations:
+   - show a ProgressDialog
+   - call wx.Yield() occasionally (so the UI redraws)
+
+2) Don’t try to do pcbnew work in background threads.
+   pcbnew is not thread-safe. You can use threads for pure Python work, but
+   touching KiCad objects crashes.
+
+3) Board open detection.
+   Updating/deleting boards that are open is dangerous, so the UI disables those
+   actions when the manager says a board is open (lock files).
 
 Author: Eliot
 License: MIT

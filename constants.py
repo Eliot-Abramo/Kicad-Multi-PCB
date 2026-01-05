@@ -1,8 +1,20 @@
 """
-Multi-Board PCB Manager - Constants and Configuration
-======================================================
+Multi-Board PCB Manager - Constants
+===================================
 
-Centralized configuration values for consistent behavior.
+This is the one place where the magic numbers live.
+
+A couple of notes:
+- `CONFIG_VERSION` is the version stored in the JSON config.
+- `BLOCK_LIB_NAME` / `PORT_LIB_NAME` are project footprint libs we generate
+  on the fly (`.pretty` folders in the project dir). This avoids touching KiCad’s
+  global libs, and keeps projects portable.
+
+Performance knobs
+-----------------
+The plugin has to run inside KiCad’s GUI process. If we do heavyweight stuff
+without care, KiCad “Not Responding” happens. The manager uses caching + tries
+to avoid work, and these constants let us tune the trade-offs.
 
 Author: Eliot
 License: MIT
