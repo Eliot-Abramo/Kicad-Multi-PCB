@@ -517,10 +517,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 ---
 
 ## Acknowledgments
-
-- The KiCad development team for the excellent pcbnew Python API
-- The open-source EDA community
-
+- Eliot Abramo - Development of project and maintainer - Initial Idea and documentation
 ---
 
 *Built with ❤️ for the KiCad community*
