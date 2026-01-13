@@ -1,37 +1,38 @@
 """
 Multi-Board PCB Manager - KiCad Plugin
-=======================================
+======================================
 
-How KiCad sees this folder
+A KiCad Action Plugin for managing multiple PCB files that share a single
+schematic source of truth.
+
+How KiCad Sees This Module
 --------------------------
-KiCad loads Python plugins by importing the module in your plugins directory.
-For Action Plugins, KiCad expects a subclass of `pcbnew.ActionPlugin` and it
-expects you to call `.register()` so it shows up in the UI.
+KiCad loads Python plugins by importing modules in the plugins directory.
+For Action Plugins, KiCad expects a subclass of pcbnew.ActionPlugin with
+.register() called so it appears in the UI.
 
-This file is intentionally tiny:
-- It wires the plugin into KiCad.
-- It opens the main wx dialog (defined in dialogs.py).
-- It catches exceptions and shows a useful traceback instead of silently dying.
+This file is intentionally minimal:
+- Wires the plugin into KiCad
+- Opens the main wx dialog (defined in dialogs.py)
+- Catches exceptions and shows useful tracebacks
 
-KiCad subtleties
------------------------------------------------------
-1) You’re running inside KiCad.
-   If you block the UI thread for long, KiCad freezes. That’s why long actions
-   use progress dialogs + occasional `wx.Yield()` elsewhere.
+KiCad Integration Notes
+-----------------------
+1. Running inside KiCad: If you block the UI thread for too long, KiCad
+   freezes. Long actions use progress dialogs + wx.Yield()
 
-2) `pcbnew.GetBoard()` only works if a PCB editor window is active.
+2. pcbnew.GetBoard(): Only works if a PCB editor window is active.
    If the user launches the plugin with no board open, we bail early.
 
-3) Always be defensive with exceptions.
-   A thrown exception in a KiCad plugin is not like a normal Python script —
-   it can leave the UI in a weird state
+3. Exception handling: A thrown exception in a KiCad plugin can leave
+   the UI in a weird state. Always be defensive.
 
-Author: Eliot
+Author: Eliot Abramo
 License: MIT
 """
 
-__version__ = "11.2"
-__author__ = "Eliot"
+__version__ = "12.0"
+__author__ = "Eliot Abramo"
 
 import os
 import traceback
@@ -44,45 +45,44 @@ from .dialogs import MainDialog
 
 class MultiBoardPlugin(pcbnew.ActionPlugin):
     """KiCad Action Plugin for multi-board management."""
-    
+
     def defaults(self):
-        # Called by KiCad when it discovers the plugin.
-        # This is just metadata + icon wiring.
-        """Plugin metadata."""
+        """Set plugin metadata (called by KiCad during discovery)."""
         self.name = "Multi-Board Manager"
         self.category = "Project"
         self.description = "Manage multiple PCBs from a single schematic"
         self.show_toolbar_button = True
-        
+
         icon_path = os.path.join(os.path.dirname(__file__), "icon.png")
         if os.path.exists(icon_path):
             self.icon_file_name = icon_path
-    
+
     def Run(self):
-        # Called when the user clicks the toolbar button / menu entry.
-        # We should keep this fast and user-friendly.
-        """Plugin entry point."""
+        """Plugin entry point (called when user clicks toolbar/menu)."""
         board = pcbnew.GetBoard()
-        
+
         if not board:
             wx.MessageBox(
-                "Please open a PCB file first.",
+                "Please open a PCB file first.\n\n"
+                "The Multi-Board Manager needs an active PCB to determine "
+                "the project location.",
                 "Multi-Board Manager",
-                wx.ICON_ERROR
+                wx.ICON_ERROR,
             )
             return
-        
+
         try:
             dialog = MainDialog(None, board)
             dialog.ShowModal()
             dialog.Destroy()
         except Exception as e:
             wx.MessageBox(
-                f"Error: {e}\n\n{traceback.format_exc()}",
+                f"An error occurred:\n\n{e}\n\n"
+                f"Details:\n{traceback.format_exc()}",
                 "Multi-Board Manager Error",
-                wx.ICON_ERROR
+                wx.ICON_ERROR,
             )
 
 
-# Register plugin
+# Register the plugin with KiCad
 MultiBoardPlugin().register()
