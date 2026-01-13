@@ -1,0 +1,30 @@
+{
+    "$schema": "https://go.kicad.org/pcm/schemas/v1",
+    "name": "Multi-Board PCB Manager",
+    "description": "Manage multiple PCBs from a single schematic. Create sub-boards that share one root schematic, with automatic component synchronization, ownership tracking, and inter-board port definitions.",
+    "description_full": "Multi-Board PCB Manager enables hierarchical PCB workflows where one root schematic drives multiple independent PCB layouts.\n\nKey Features:\n• Single source of truth: All boards share one schematic via hardlinks/symlinks\n• Ownership rule: Components belong to the first board they're placed on\n• Update command: Sync new components from schematic to any board\n• Inter-board ports: Define electrical connection points between boards\n• Health reports: Monitor board status and detect issues\n• DRC integration: Run connectivity checks across all boards\n• Open board detection: Prevents dangerous operations on boards open in KiCad\n\nPerfect for:\n• Modular systems with shared circuitry\n• Products with regional variants\n• Designs requiring different form factors\n• Test boards and production boards from same schematic",
+    "identifier": "com.github.eliot.multi-pcb-manager",
+    "type": "plugin",
+    "author": {
+        "name": "Eliot Abramo",
+        "contact": {
+            "github": "https://github.com/Eliot-Abramo"
+        }
+    },
+    "license": "MIT",
+    "resources": {
+        "homepage": "https://github.com/Eliot-Abramo/Kicad-Multi-PCB"
+    },
+    "versions": [
+        {
+            "version": "12.0.0",
+            "status": "stable",
+            "kicad_version": "8.0",
+            "kicad_version_max": "9.99",
+            "download_sha256": "",
+            "download_size": 0,
+            "download_url": "",
+            "install_size": 160000
+        }
+    ]
+}
