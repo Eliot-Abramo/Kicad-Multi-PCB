@@ -75,23 +75,10 @@ graph LR
 
 ### Installation Steps
 
-#### Option 1: Install From ZIP (Recommended)
+#### Option 1: Install From ZIP (recommended)
 Open the Kicad 'Plugin and Content Manager' and click on 'Install from File...' at the bottom. Take the ZIP from your desired release (in the 'Releases' folder) and apply changes.
 
-#### Option 2: Install Script
-
-**Linux/macOS:**
-```bash
-chmod +x install.sh
-./install.sh
-```
-
-**Windows:**
-```cmd
-install.bat
-```
-
-#### Option 3: Manual Installation
+#### Option 2: Manual Installation
 
 Copy the plugin folder to your KiCad plugins directory:
 
@@ -517,7 +504,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 ---
 
 ## Acknowledgments
-- Eliot Abramo - Development of project and maintainer - Initial Idea and documentation
+- Eliot Abramo - Development of project and maintainer - Initial Idea, developement and documentation
 ---
 
 *Built with ❤️ for the KiCad community*
