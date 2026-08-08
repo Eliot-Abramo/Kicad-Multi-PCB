@@ -23,6 +23,17 @@ from multiboard.version import MAX_KICAD, MIN_KICAD, __version__  # noqa: E402
 PCM_VERSION = re.compile(r"^\d{1,4}(\.\d{1,4}(\.\d{1,6})?)?$")
 PCM_KICAD = re.compile(r"^\d{1,2}(\.\d{1,2}(\.\d{1,2})?)?$")
 
+# The PCM schema constrains several free-text-looking fields to lowercase
+# kebab-case. `category` is one of them, and it is easy to miss because it reads
+# like a display label -- "Design Tools" is rejected at install time with a bare
+# regex error and no hint about which field is at fault.
+PCM_SLUG = re.compile(r"^[a-z][-a-z0-9]{0,48}[a-z0-9]$")
+PCM_IDENTIFIER = re.compile(r"^[a-zA-Z][-a-zA-Z0-9.]{0,98}[a-zA-Z0-9]$")
+PCM_CONTACT_KEY = re.compile(r"^[a-z][-a-z0-9 ]{0,48}[a-z0-9]$")
+
+SLUG_FIELDS = ("type", "category")
+PCM_STATUSES = ("stable", "testing", "development", "deprecated")
+
 
 def fail(message: str) -> None:
     print(f"FAIL {message}")
@@ -88,23 +99,76 @@ def check_metadata() -> None:
     else:
         print("ok   metadata.json runtime swig")
 
-    if entry.get("status") not in ("stable", "testing", "development", "deprecated"):
-        fail(f"metadata.json status {entry.get('status')!r} is not a PCM status")
+    if entry.get("status") not in PCM_STATUSES:
+        fail(f"metadata.json status {entry.get('status')!r} is not one of {PCM_STATUSES}")
+
+    platforms = entry.get("platforms")
+    if platforms is not None:
+        unknown = sorted(set(platforms) - {"linux", "macos", "windows"})
+        if unknown:
+            fail(f"metadata.json platforms contains {unknown}")
 
     for key in ("download_url", "download_sha256", "download_size", "install_size"):
         if key in entry:
             fail(f"metadata.json must not contain {key} inside the package")
 
+    check_package_fields(data)
+
+
+def check_package_fields(data: dict) -> None:
+    """Root-level constraints, including the kebab-case ones that read like labels."""
     for field, limit in (("description", 500), ("description_full", 5000), ("name", 200)):
         if len(data.get(field, "")) > limit:
-            fail(f"metadata.json {field} exceeds {limit} characters")
+            fail(f"metadata.json {field} exceeds {limit} characters ({len(data.get(field, ''))})")
+
+    identifier = data.get("identifier", "")
+    if not PCM_IDENTIFIER.match(identifier):
+        fail(f"metadata.json identifier {identifier!r} does not match the PCM schema")
+    else:
+        print(f"ok   metadata.json identifier {identifier}")
+
+    # These are the ones that bite: they look like display text but the schema
+    # requires lowercase kebab-case, and PCM rejects the whole package on install
+    # with only a regex in the error.
+    for field in SLUG_FIELDS:
+        value = data.get(field)
+        if value is None:
+            continue
+        if not PCM_SLUG.match(value):
+            fail(
+                f"metadata.json {field} {value!r} must be lowercase kebab-case "
+                f"(matching {PCM_SLUG.pattern}). Try {_slugify(value)!r}."
+            )
+        else:
+            print(f"ok   metadata.json {field} {value}")
 
     tags = data.get("tags") or []
-    bad_tags = [t for t in tags if not re.match(r"^[a-z][-a-z0-9]{0,48}[a-z0-9]$", t)]
+    bad_tags = [t for t in tags if not PCM_SLUG.match(t)]
     if bad_tags:
-        fail(f"metadata.json tags must be lowercase kebab-case: {bad_tags}")
+        fail(
+            f"metadata.json tags must be lowercase kebab-case: {bad_tags}. "
+            f"Try {[_slugify(t) for t in bad_tags]}."
+        )
     elif tags:
         print(f"ok   metadata.json {len(tags)} tags")
+
+    for role in ("author", "maintainer"):
+        person = data.get(role) or {}
+        if not person:
+            continue
+        bad_keys = [k for k in (person.get("contact") or {}) if not PCM_CONTACT_KEY.match(k)]
+        if bad_keys:
+            fail(f"metadata.json {role}.contact keys must be lowercase: {bad_keys}")
+
+    long_resources = [k for k, v in (data.get("resources") or {}).items() if len(v) > 500]
+    if long_resources:
+        fail(f"metadata.json resources exceed 500 characters: {long_resources}")
+
+
+def _slugify(value: str) -> str:
+    """The kebab-case form of a label, so the error message is actionable."""
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "misc"
 
 
 def check_readme() -> None:
