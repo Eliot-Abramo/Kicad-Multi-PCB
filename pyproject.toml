@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multiboard"
+version = "13.0.0"
+description = "Manage multiple KiCad PCBs driven by a single schematic"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Eliot Abramo" }]
+keywords = ["kicad", "pcb", "eda", "multi-board"]
+
+# No runtime dependencies, deliberately. The plugin runs inside KiCad's embedded
+# Python, where installing anything is awkward and version-fragile. lxml is used
+# when present and the stdlib parser is used when it is not.
+dependencies = []
+
+[project.optional-dependencies]
+fast = ["lxml>=4.6"]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[project.scripts]
+multiboard = "multiboard.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Eliot-Abramo/Kicad-Multi-PCB"
+Issues = "https://github.com/Eliot-Abramo/Kicad-Multi-PCB/issues"
+
+[tool.setuptools.packages.find]
+include = ["multiboard*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",    # long lines are caught by the formatter
+    "B008",    # wx idioms call functions in defaults
+    "SIM105",  # contextlib.suppress is not clearer in tight loops
+    "RUF012",  # wx class attributes are conventionally mutable
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error::DeprecationWarning:multiboard.*"]

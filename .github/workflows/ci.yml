@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # The whole point of the core/ purity rule: this runs on a bare Python
+      # with no KiCad and no wxPython installed anywhere.
+      - name: Tests
+        run: pytest -q
+
+      - name: CLI runs without pcbnew
+        run: |
+          python -c "import multiboard.cli; print('cli imports clean')"
+          python -m multiboard.cli --help
+          python -m multiboard.cli version
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff check multiboard/ tests/ tools/
+      - run: ruff format --check multiboard/ tests/
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Every version string agrees
+        run: python tools/check_version.py
+
+      - name: Build the PCM archive
+        run: python tools/build_package.py
+
+      # v12's release ZIP shipped an entire .git directory and __pycache__.
+      # Assert from outside the build script that it cannot happen again.
+      - name: Archive contains nothing it should not
+        run: |
+          python - <<'PY'
+          import sys, zipfile, pathlib
+          archive = next(pathlib.Path("dist").glob("*.zip"))
+          names = zipfile.ZipFile(archive).namelist()
+          bad = [n for n in names if any(t in n for t in (".git", "__pycache__", ".pyc", "tests/", "tools/"))]
+          assert not bad, f"archive contains {bad}"
+          assert "metadata.json" in names
+          assert "resources/icon.png" in names
+          assert any(n.startswith("plugins/multiboard/") for n in names)
+          print(f"{archive.name}: {len(names)} files, clean")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pcm-package
+          path: dist/*.zip

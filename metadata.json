@@ -1,8 +1,8 @@
 {
-    "$schema": "https://go.kicad.org/pcm/schemas/v1",
+    "$schema": "https://go.kicad.org/pcm/schemas/v2",
     "name": "Multi-Board PCB Manager",
-    "description": "Manage multiple PCBs from a single schematic. Create sub-boards that share one root schematic, with automatic component synchronization, ownership tracking, and inter-board port definitions.",
-    "description_full": "Multi-Board PCB Manager enables hierarchical PCB workflows where one root schematic drives multiple independent PCB layouts.\n\nKey Features:\n• Single source of truth: All boards share one schematic via hardlinks/symlinks\n• Ownership rule: Components belong to the first board they're placed on\n• Update command: Sync new components from schematic to any board\n• Inter-board ports: Define electrical connection points between boards\n• Health reports: Monitor board status and detect issues\n• DRC integration: Run connectivity checks across all boards\n• Open board detection: Prevents dangerous operations on boards open in KiCad\n\nPerfect for:\n• Modular systems with shared circuitry\n• Products with regional variants\n• Designs requiring different form factors\n• Test boards and production boards from same schematic",
+    "description": "Manage several PCBs driven by one schematic, and find any component instantly.",
+    "description_full": "Multi-Board PCB Manager turns one KiCad schematic into several independent PCB layouts, and keeps track of which board every component belongs on.\n\nWhat it does:\n• Sub-boards that share one schematic through hardlinks, so they can never drift apart\n• A cross-board component index: search every board at once, and jump straight to a part\n• Assignment rules driven by your schematic hierarchy — one rule per board assigns everything, including parts you add later\n• Conflict detection: components placed on two boards, placed somewhere other than where they were assigned, or missing from the schematic entirely\n• An update preview — see exactly what will be added, changed, or removed before anything is written\n• Inter-board ports, rendered as pads on generated board block footprints\n• Doctor: a preflight check with one-click repairs for broken links, unresolved libraries, and stale locks\n• A headless CLI for CI — index, cross-reference, conflict checking, DRC, and fabrication output with no GUI\n\nSuited to modular systems, daughterboards, rigid-flex assemblies, and any product whose electronics span more than one board.",
     "identifier": "com.github.eliot-abramo.multi-pcb-manager",
     "type": "plugin",
     "author": {
@@ -11,15 +11,42 @@
             "github": "https://github.com/Eliot-Abramo"
         }
     },
-    "license": "MIT",
-    "resources": {
-        "homepage": "https://github.com/Eliot-Abramo/Kicad-Multi-PCB"
+    "maintainer": {
+        "name": "Eliot Abramo",
+        "contact": {
+            "github": "https://github.com/Eliot-Abramo"
+        }
     },
+    "license": "MIT",
+    "category": "Design Tools",
+    "tags": [
+        "multi-board",
+        "pcb",
+        "schematic",
+        "workflow",
+        "bom",
+        "automation"
+    ],
+    "resources": {
+        "homepage": "https://github.com/Eliot-Abramo/Kicad-Multi-PCB",
+        "documentation": "https://github.com/Eliot-Abramo/Kicad-Multi-PCB#readme",
+        "issues": "https://github.com/Eliot-Abramo/Kicad-Multi-PCB/issues"
+    },
+    "keep_on_update": [
+        "^\\.kicad_multiboard\\.json$"
+    ],
     "versions": [
         {
-            "version": "12.0",
+            "version": "13.0.0",
             "status": "stable",
-            "kicad_version": "8.0"
+            "kicad_version": "10.0",
+            "kicad_version_max": "10.99",
+            "runtime": "swig",
+            "platforms": [
+                "linux",
+                "macos",
+                "windows"
+            ]
         }
     ]
 }
