@@ -205,3 +205,27 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# =============================================================================
+# Multi-Board PCB Manager
+# =============================================================================
+
+# Per-project scratch: index cache, netlist exports, DRC reports, focus handoff.
+.multiboard/
+
+# Deleted boards are moved here rather than erased.
+boards/.trash/
+
+# KiCad editor lock files.
+~*.lck
+*.kicad_prl
+
+# Config backups written before every save.
+.kicad_multiboard.json.bak
+
+# Built PCM archives are release assets, not repository content. v12 committed
+# them, and the committed ZIP contained a full .git directory.
+dist/
+Releases/
+
+# Editor settings, not project content.
+.vscode/

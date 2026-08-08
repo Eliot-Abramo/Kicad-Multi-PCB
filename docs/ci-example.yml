@@ -1,0 +1,76 @@
+# Continuous integration for a multi-board KiCad project.
+#
+# Copy this into your PCB repository as .github/workflows/pcb.yml.
+#
+# None of these steps need pcbnew, an X server, or a KiCad GUI: the index and
+# conflict checking are pure file parsing, and DRC is kicad-cli. That is what
+# makes a multi-board project checkable on every pull request.
+
+name: PCB checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  boards:
+    runs-on: ubuntu-latest
+
+    # Provides kicad-cli. Pin the tag to the KiCad version your project uses.
+    container: ghcr.io/kicad/kicad:10.0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install multiboard
+        run: pip install --no-deps multiboard
+
+      # Configuration problems first: a missing library or a broken schematic
+      # link explains every failure that would otherwise follow.
+      - name: Doctor
+        run: multiboard -C . doctor
+
+      # Fails the build if any component is on two boards, placed somewhere
+      # other than where it was assigned, or on a board but gone from the
+      # schematic. Exit code 3.
+      - name: Assignment conflicts
+        run: multiboard -C . check --exit-code-conflicts
+
+      # Exit code 4 on violations. Drop --exit-code-violations to report only.
+      - name: DRC every board
+        run: multiboard -C . drc --all --exit-code-violations --json drc.json
+
+      - name: Cross-reference
+        run: multiboard -C . xref --csv component-xref.csv
+
+      - name: Board summary
+        run: multiboard -C . boards
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pcb-reports
+          path: |
+            component-xref.csv
+            drc.json
+
+  # Fabrication output, built only for tagged releases.
+  fabrication:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    container: ghcr.io/kicad/kicad:10.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install --no-deps multiboard
+
+      # Uses each board's fabrication.kicad_jobset, created on first run and
+      # yours to edit thereafter. The plugin never overwrites it.
+      - name: Build fabrication output
+        run: multiboard -C . fab --all --out fabrication
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fabrication-${{ github.ref_name }}
+          path: fabrication/

@@ -1,510 +1,441 @@
 # Multi-Board PCB Manager
 
-[![KiCad 9.0+](https://img.shields.io/badge/KiCad-9.0%2B-blue)](https://www.kicad.org/)
+[![KiCad-10.0](https://img.shields.io/badge/KiCad-10.0-blue)](https://www.kicad.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue)](https://www.python.org/)
 
-A KiCad Action Plugin that lets you manage **multiple PCB files** ("sub-boards") that all share **one schematic**.
-
-## Table of Contents
-
-- [Why This Exists](#why-this-exists)
-- [Key Features](#key-features)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Core Concepts](#core-concepts)
-- [Workflow Guide](#workflow-guide)
-- [Project Structure](#project-structure)
-- [Architecture](#architecture)
-- [Ports (Inter-Board Connections)](#ports-inter-board-connections)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
-- [License](#license)
+One schematic. Several PCBs. And you always know where every component is.
 
 ---
 
-## Why This Exists
+## Where is R42?
 
-KiCad excels at "one schematic → one PCB" workflows. But real-world projects often need:
+That question is why this exists. In a multi-board project the honest answer used
+to be "open each PCB and look." Now it takes about a second:
 
-- **Multiple PCBs** from a single schematic (rigid-flex, daughterboards, panelized variants)
-- **A single source of truth** for symbols, connectivity, and BOM data
-- **No proprietary meta-formats** — just standard KiCad files
+```text
+Ctrl+P  →  type "R42"
 
-This plugin provides a pragmatic solution that stays 100% compatible with native KiCad formats.
+R42   10k   Power   /Power/Regulators/   R_0402_1005Metric
+      Assigned to Power by rule 1: sheet /Power/*
+      Placed at 42.50, 18.25 mm on Power (front)
+      Status: OK
+```
 
-```mermaid
-graph LR
-    subgraph Traditional["Traditional Workflow"]
-        S1[Schematic] --> P1[PCB]
-    end
-    
-    subgraph MultiBoard["Multi-Board Workflow"]
-        S2[Root Schematic] --> P2[Power PCB]
-        S2 --> P3[IO PCB]
-        S2 --> P4[Main PCB]
-    end
-    
-    style S2 fill:#4CAF50,color:white
-    style P2 fill:#2196F3,color:white
-    style P3 fill:#2196F3,color:white
-    style P4 fill:#2196F3,color:white
+Press Enter and KiCad zooms to it. If it's on a different board, the plugin opens
+that board and reveals the component there.
+
+Same question from a terminal or a CI job:
+
+```console
+$ multiboard where R42
+R42  10k
+  footprint  Resistor_SMD:R_0402_1005Metric
+  sheet      /Power/Regulators/
+  assigned   Power  [rule 1: sheet /Power/*]
+  placed on  Power  at 42.50, 18.25 mm  0deg  front
+  status     OK
 ```
 
 ---
 
-## Key Features
+## Contents
 
-- ✅ **Single Source of Truth** — One schematic drives all boards (via hardlinks/symlinks)
-- ✅ **Automatic Component Assignment** — Components belong to whichever board they're placed on
-- ✅ **Smart Netlist Sync** — Updates values, footprints, and nets without losing layout
-- ✅ **Inter-Board Ports** — Define connection points between boards
-- ✅ **Block Footprints** — Visual board representations for assembly documentation
-- ✅ **Health Reports** — Track board status and component distribution
-- ✅ **DRC Integration** — Run connectivity checks across all boards
+- [What it does](#what-it-does)
+- [Installation](#installation)
+- [Getting started](#getting-started)
+- [How ownership works](#how-ownership-works)
+- [Assignment rules](#assignment-rules)
+- [Updating a board](#updating-a-board)
+- [Ports](#ports)
+- [Command line and CI](#command-line-and-ci)
+- [Project layout](#project-layout)
+- [Troubleshooting](#troubleshooting)
+- [Compatibility](#compatibility)
+- [Architecture](#architecture)
+- [Upgrading from version 12](#upgrading-from-version-12)
+- [Contributing](#contributing)
+
+---
+
+## What it does
+
+KiCad is built around one schematic driving one PCB. Real products often need
+more than one board: a power board and a control board, a main board and a
+daughterboard, a rigid section and a flex tail. There is no native support for
+that in KiCad 10, and the usual workarounds either duplicate the schematic (which
+then drifts) or abandon a single BOM.
+
+This plugin keeps one schematic as the source of truth and gives each board its
+own PCB, linked to that schematic rather than copied from it.
+
+| Capability | What it means |
+| --- | --- |
+| **One schematic, many boards** | Each board directory holds a hardlink to the root schematic. Not a copy — the same file, so they cannot drift apart. |
+| **Find any component instantly** | A cross-board index answers "where is this part?" without opening a single PCB. Search by reference, value, footprint, sheet, net, or status. |
+| **Assignment you decide, not discover** | Rules driven by your schematic hierarchy: one rule per board assigns everything, including parts you add next month. |
+| **Conflicts are reported, not hidden** | A part on two boards, a part placed somewhere other than where it was assigned, a part on a board but gone from the schematic — all surfaced with a suggested fix. |
+| **Preview before you commit** | Update shows exactly what it will add, change, and remove, with a checkbox per row. Removals start unchecked. |
+| **Doctor** | A preflight check with one-click repairs: broken schematic links, unresolvable libraries, stale lock files, malformed generated footprints. |
+| **Works headless** | A CLI with no GUI and no `pcbnew` dependency, so CI can check conflicts, run DRC, and build fabrication output. |
 
 ---
 
 ## Installation
 
-### Requirements
+**Requirements:** KiCad 10.0 or newer (10.x only — see [Compatibility](#compatibility)).
+`kicad-cli` ships with KiCad and is found automatically on all three platforms.
 
-- **KiCad 9.0+** (developed and tested on 9.x)
-- **Python 3.9+** (ships with KiCad)
-- **kicad-cli** in PATH (installed with KiCad)
+### From the Plugin and Content Manager
 
-### Installation Steps
+Open KiCad → **Plugin and Content Manager** → **Install from File...** and choose
+the release ZIP.
 
-#### Option 1: Install From ZIP (recommended)
-Open the Kicad 'Plugin and Content Manager' and click on 'Install from File...' at the bottom. Take the ZIP from your desired release (in the 'Releases' folder) and apply changes.
+### Manually
 
-#### Option 2: Manual Installation
-
-Copy the plugin folder to your KiCad plugins directory:
+Copy the `multiboard/` directory into KiCad 10's plugin folder:
 
 | OS | Path |
-|---|---|
-| **Windows** | `%APPDATA%\kicad\9.0\scripting\plugins\` |
-| **Linux** | `~/.local/share/kicad/9.0/scripting/plugins/` |
-| **macOS** | `~/Library/Application Support/kicad/9.0/scripting/plugins/` |
+| --- | --- |
+| Windows | `%APPDATA%\kicad\10.0\scripting\plugins\` |
+| Linux | `~/.local/share/kicad/10.0/scripting/plugins/` |
+| macOS | `~/Library/Application Support/kicad/10.0/scripting/plugins/` |
 
-After installation:
-1. Open KiCad PCB Editor
-2. Go to **Tools → External Plugins → Refresh Plugins**
-3. Access via **Tools → External Plugins → Multi-Board Manager**
+Then **Tools → External Plugins → Refresh Plugins**, and launch it from
+**Tools → External Plugins → Multi-Board Manager**.
+
+### For the command line
+
+```console
+pip install -e .        # from a clone
+multiboard --help
+```
+
+The CLI never imports `pcbnew`, so it runs anywhere Python does.
 
 ---
 
-## Quick Start
+## Getting started
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Plugin as Multi-Board Manager
-    participant KiCad
-    
-    User->>KiCad: Open any project PCB
-    User->>Plugin: Launch Multi-Board Manager
-    User->>Plugin: Click "New" → Create board
-    Plugin->>KiCad: Creates board folder + links schematic
-    User->>Plugin: Double-click board to open
-    User->>KiCad: Place components, save
-    User->>Plugin: Click "Update"
-    Plugin->>KiCad: Syncs components from schematic
-    Note over Plugin,KiCad: Components now assigned to this board
-```
+Open any PCB in your project and launch the plugin. On a project it has not seen
+before it runs a four-step setup:
 
-### Step-by-Step
+1. **Confirm the source of truth.** Which `.kicad_pro` and schematic drive the
+   boards. If there is only one candidate it is preselected.
+2. **Check that linking works.** It actually creates and deletes a test hardlink
+   rather than assuming — filesystem and permission problems are much easier to
+   deal with now than three steps later.
+3. **Create your boards.** If your schematic has top-level hierarchical sheets it
+   offers one board per sheet, which is the usual structure.
+4. **Assign automatically.** One rule per sheet, so every component already knows
+   where it belongs.
 
-1. **Open your project** — Any PCB in the project works
-2. **Launch the plugin** — Tools → External Plugins → Multi-Board Manager
-3. **Create a board** — Click "New", enter a name (e.g., "Power")
-4. **Open the board** — Double-click or press Enter
-5. **Place components** — Drag footprints from the schematic
-6. **Save and Update** — Return to the manager, click "Update"
+Then, for each board: select it, press **Update**, review the plan, and apply.
+Open the board in KiCad and lay it out.
 
 ---
 
-## Core Concepts
+## How ownership works
 
-### The Ownership Rule
+Three layers, kept separate on purpose. Version 12 had only the middle one, which
+is why a component placed on two boards silently became whichever board happened
+to be last in a dictionary.
 
-> **A component belongs to whichever board it's placed on first.**
+```text
+INTENT        where a component should go
+              ← an explicit pin, or the MB_Board schematic field, or a rule
 
-This is the fundamental principle that makes multi-board work deterministic:
+REALITY       where it actually is
+              ← read from the board files themselves
 
-```mermaid
-flowchart TD
-    subgraph Schematic["Root Schematic (Source of Truth)"]
-        R1[R1] & R2[R2] & R3[R3] & U1[U1] & U2[U2] & C1[C1]
-    end
-    
-    subgraph Boards["Sub-Boards"]
-        subgraph Power["Power Board"]
-            PR1[R1] & PU1[U1] & PC1[C1]
-        end
-        subgraph IO["IO Board"]
-            IR2[R2] & IR3[R3] & IU2[U2]
-        end
-    end
-    
-    R1 -.->|placed| PR1
-    U1 -.->|placed| PU1
-    C1 -.->|placed| PC1
-    R2 -.->|placed| IR2
-    R3 -.->|placed| IR3
-    U2 -.->|placed| IU2
-    
-    style Schematic fill:#E8F5E9
-    style Power fill:#E3F2FD
-    style IO fill:#FFF3E0
+RECONCILE     the difference between the two, classified and explained
 ```
 
-When you update a board:
-- Components already on **this board** → Updated (value, footprint)
-- Components on **another board** → Skipped
-- Components on **no board** → Added to this board
+Every component lands in exactly one state:
 
-### Moving Components Between Boards
+| Status | Meaning | Offered fix |
+| --- | --- | --- |
+| **OK** | Assigned to a board, placed on that board | — |
+| **Not placed** | Assigned, not laid out yet | Update that board |
+| **Unassigned** | Placed, but nothing assigns it | Adopt the placement as intent |
+| **Misplaced** | Assigned to one board, placed on another | Reassign, or move it |
+| **Duplicate** | Placed on more than one board | Shows every placement |
+| **Orphan** | On a board, absent from the schematic | Remove it from the board |
+| **No home** | In the schematic, not assigned, not placed | Assign it |
+| **Skipped** | DNP, excluded from board, or no footprint | — |
 
-To move R1 from Power to IO:
-1. Delete R1 from Power board
-2. Save Power board
-3. Update IO board
-4. R1 appears on IO board
+Intent always records *why*, and the Components view has a column for it:
+`rule 2: sheet /Power/*`, `pinned manually`, `field MB_Board = IO`. You never
+have to guess, and you never have to open a JSON file to find out.
 
 ---
 
-## Workflow Guide
+## Assignment rules
 
-### ⚠️ Critical: Always Edit the Root Schematic
+**Rules → Add**, or **Rules → Suggest from sheets** for the fast path.
 
-```mermaid
-flowchart LR
-    subgraph Correct["✅ Correct"]
-        RS[Root Schematic] -->|edit here| RS
-        RS -->|linked| SB1[boards/Power/Power.kicad_sch]
-        RS -->|linked| SB2[boards/IO/IO.kicad_sch]
-    end
-    
-    subgraph Wrong["❌ Wrong"]
-        SB3[boards/Power/Power.kicad_sch] -->|edit here| SB3
-    end
-    
-    style Correct fill:#E8F5E9
-    style Wrong fill:#FFEBEE
-```
+| Kind | Example | Matches |
+| --- | --- | --- |
+| **Sheet path** | `/Power/` | Everything on that sheet and its children |
+| | `/*/Filters/` | A `Filters` subsheet anywhere |
+| **Reference range** | `R100-R199, U1, C10-C19` | Numerically — `R9` is inside `R1-R10` |
+| | `J` | Every reference starting with `J` |
+| **Regex** | `^TP\d+$` | Every test point |
 
-**The root schematic is the source of truth.** Sub-board schematics are hardlinks/symlinks to it.
+The first matching rule wins, and rules can be reordered. The editor shows a live
+count per rule and lists exactly what each one claims — a rule that looks right
+but is shadowed by an earlier one shows zero, which is the feedback that makes
+priority make sense. It also tells you which sheets no rule covers.
 
-| Action | Where |
-|--------|-------|
-| Add/remove components | Root schematic |
-| Change values/footprints | Root schematic |
-| Modify hierarchy | Root schematic |
-| Place footprints | Individual board PCBs |
-| Route traces | Individual board PCBs |
-| Define board outline | Individual board PCBs |
+Two things override rules, in this order:
 
-**Why?** The plugin links (not copies) schematics to ensure perfect synchronization. Edits anywhere technically work, but editing the root guarantees consistency and avoids confusion.
-
-### Recommended Workflow
-
-```mermaid
-sequenceDiagram
-    participant Designer
-    participant RootSch as Root Schematic
-    participant Manager as Multi-Board Manager
-    participant BoardPCB as Board PCB
-    
-    rect rgb(232, 245, 233)
-        Note over Designer,RootSch: Design Phase
-        Designer->>RootSch: Add components
-        Designer->>RootSch: Connect nets
-        Designer->>RootSch: Assign footprints
-    end
-    
-    rect rgb(227, 242, 253)
-        Note over Designer,BoardPCB: Layout Phase
-        Designer->>Manager: Create boards
-        loop For each board
-            Designer->>Manager: Select board
-            Designer->>Manager: Click Update
-            Manager->>BoardPCB: Import unassigned components
-            Designer->>BoardPCB: Place & route
-            Designer->>BoardPCB: Save
-        end
-    end
-    
-    rect rgb(255, 243, 224)
-        Note over Designer,BoardPCB: Iteration
-        Designer->>RootSch: Modify design
-        Designer->>Manager: Update all boards
-    end
-```
-
-### DNP and Exclude from Board
-
-Components are automatically skipped during Update if they have:
-- **DNP** property set
-- **Exclude from board** property set
-- Value text of "DNP"
-- No footprint assigned
+1. **A manual pin.** Right-click any component (or a multi-selection) in the
+   Components view → *Assign to board*.
+2. **A schematic field.** Add a field called `MB_Board` to a symbol in Eeschema
+   and set it to a board name. The plugin **reads** this field and never writes
+   it — your schematic is not modified by this tool, ever.
 
 ---
 
-## Project Structure
+## Updating a board
 
-After creating boards, your project looks like this:
+Update pulls components from the schematic onto a board. It always shows a plan
+first:
 
+```text
+Update plan for board 'Power': Add 47, Update 3, Replace footprint 1, Remove 2, Skip 12
+
+Add (47):
+    C7   - Assigned to this board (rule 1: sheet /Power/*)
+    ...
+Remove (2):
+  - R88  - Not present in the schematic
 ```
+
+Rows prefixed `-` start unchecked. Removals and footprint replacements discard
+existing work, so accepting them is always deliberate. "Safe selection" checks
+everything additive and nothing destructive.
+
+What Update does, in order: replace changed footprints (keeping position, rotation
+and layer), add new components, refresh values, link each footprint to its
+schematic symbol, clear stale nets, apply nets from the netlist, rebuild
+connectivity, and save.
+
+A board open in KiCad is never written to. Close it first, or use
+**Doctor → Clear lock files** if KiCad crashed.
+
+---
+
+## Ports
+
+Ports document where a net leaves a board — a connector, a flex tail, a
+board-to-board header.
+
+Select a board → **Ports**. Each port has a name, a net (defaults to the name),
+an edge, and a position along that edge. They do two things:
+
+- become pads on the generated block footprint for that board, so you can place a
+  representation of one board on another;
+- suppress "unconnected" DRC violations for their nets, which are expected to
+  leave the board.
+
+Port markers and block footprints are generated into `MultiBoard_Ports.pretty`
+and `MultiBoard_Blocks.pretty` in your project, and registered in the project
+`fp-lib-table` automatically.
+
+---
+
+## Command line and CI
+
+```console
+multiboard where REF                     # which board is this component on
+multiboard index [--json] [--force]      # rebuild the index, print a summary
+multiboard xref [--board B] [--csv F]    # full cross-reference
+multiboard check --exit-code-conflicts   # exit 3 if any conflict exists
+multiboard drc --all --exit-code-violations
+multiboard boards                        # placed / pending / conflicts per board
+multiboard sync BOARD --dry-run          # print the update plan
+multiboard fab --all                     # fabrication output per board
+multiboard doctor [--json]
+```
+
+Exit codes: `0` success, `1` error, `2` not found, `3` conflicts, `4` DRC
+violations.
+
+A GitHub Actions job — the full file is in [docs/ci-example.yml](docs/ci-example.yml):
+
+```yaml
+jobs:
+  boards:
+    runs-on: ubuntu-latest
+    container: ghcr.io/kicad/kicad:10.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install --no-deps -e .
+      - run: multiboard -C . doctor
+      - run: multiboard -C . check --exit-code-conflicts
+      - run: multiboard -C . drc --all --exit-code-violations
+      - run: multiboard -C . xref --csv xref.csv
+      - uses: actions/upload-artifact@v4
+        with: { name: component-xref, path: xref.csv }
+```
+
+This works because the index, conflict checking, and cross-reference need only
+file parsing, and DRC needs only `kicad-cli`. No `pcbnew`, no X server, no GUI.
+
+---
+
+## Project layout
+
+```text
 my_project/
-├── my_project.kicad_pro          # Root project
-├── my_project.kicad_sch          # Root schematic (SOURCE OF TRUTH)
-├── my_project.kicad_pcb          # Optional root PCB
-├── .kicad_multiboard.json        # Plugin configuration
-├── fp-lib-table                  # Footprint libraries
-├── sym-lib-table                 # Symbol libraries
+├── my_project.kicad_pro
+├── my_project.kicad_sch          ← the source of truth
+├── my_project.kicad_pcb          ← optional top-level board
+├── .kicad_multiboard.json        ← plugin config (commit this)
+├── .multiboard/                  ← index cache, reports (gitignored)
+├── fp-lib-table
 │
-├── MultiBoard_Blocks.pretty/     # Generated block footprints
-│   ├── Block_Power.kicad_mod
-│   └── Block_IO.kicad_mod
-│
-├── MultiBoard_Ports.pretty/      # Generated port markers
-│   └── Port_USB.kicad_mod
+├── MultiBoard_Blocks.pretty/     ← generated board blocks
+├── MultiBoard_Ports.pretty/      ← generated port markers
 │
 └── boards/
     ├── Power/
-    │   ├── Power.kicad_pro       # Sub-project
-    │   ├── Power.kicad_sch       # LINK to root schematic
-    │   ├── Power.kicad_pcb       # Board layout
-    │   ├── fp-lib-table          # Resolved library paths
-    │   └── sym-lib-table
-    │
-    └── IO/
-        ├── IO.kicad_pro
-        ├── IO.kicad_sch          # LINK to root schematic
-        ├── IO.kicad_pcb
-        ├── fp-lib-table
-        └── sym-lib-table
+    │   ├── Power.kicad_pro
+    │   ├── Power.kicad_sch       ← hardlink to the root schematic
+    │   ├── Power.kicad_pcb
+    │   └── fp-lib-table
+    ├── IO/
+    │   └── ...
+    └── .trash/                   ← deleted boards land here, not /dev/null
 ```
 
----
+`.kicad_multiboard.json` is storage, not an interface. Everything in it is
+created and edited from the GUI. It is deterministic (sorted keys) so it diffs
+cleanly, and every write leaves a `.bak`.
 
-## Architecture
+Add to `.gitignore`:
 
-### Component Overview
-
-```mermaid
-graph TB
-    subgraph Plugin["Multi-Board Manager Plugin"]
-        UI[dialogs.py<br/>wxPython UI]
-        MGR[manager.py<br/>Core Engine]
-        CFG[config.py<br/>Data Model]
-        CONST[constants.py<br/>Configuration]
-    end
-    
-    subgraph External["External Dependencies"]
-        PCBNEW[pcbnew API]
-        CLI[kicad-cli]
-        WX[wxPython]
-    end
-    
-    subgraph Files["Project Files"]
-        JSON[.kicad_multiboard.json]
-        PCB[*.kicad_pcb]
-        SCH[*.kicad_sch]
-        LIB[*.pretty libraries]
-    end
-    
-    UI --> MGR
-    MGR --> CFG
-    CFG --> CONST
-    
-    MGR --> PCBNEW
-    MGR --> CLI
-    UI --> WX
-    
-    MGR --> JSON
-    MGR --> PCB
-    MGR --> SCH
-    MGR --> LIB
-    
-    style UI fill:#E3F2FD
-    style MGR fill:#E8F5E9
-    style CFG fill:#FFF3E0
-```
-
-### Update Pipeline
-
-```mermaid
-flowchart TD
-    A[Update Board] --> B[Refresh schematic links]
-    B --> C[Scan all boards for ownership]
-    C --> D[Export netlist via kicad-cli]
-    D --> E[Parse netlist]
-    E --> F[Load target PCB]
-    F --> G{For each component}
-    
-    G -->|On another board| H[Skip]
-    G -->|On this board| I[Update value/footprint]
-    G -->|Not placed| J[Add to board]
-    
-    I --> K[Assign nets]
-    J --> L[Pack in grid]
-    L --> K
-    H --> G
-    
-    K --> M[Save PCB]
-    
-    style A fill:#4CAF50,color:white
-    style M fill:#4CAF50,color:white
-```
-
-### Schematic Linking
-
-The plugin creates hardlinks (preferred) or symlinks to maintain a single source of truth:
-
-```mermaid
-flowchart LR
-    subgraph Root["Project Root"]
-        RS[my_project.kicad_sch<br/>inode: 12345]
-    end
-    
-    subgraph Power["boards/Power/"]
-        PS[Power.kicad_sch<br/>inode: 12345]
-    end
-    
-    subgraph IO["boards/IO/"]
-        IS[IO.kicad_sch<br/>inode: 12345]
-    end
-    
-    RS ---|hardlink| PS
-    RS ---|hardlink| IS
-    
-    style RS fill:#4CAF50,color:white
-    style PS fill:#81C784
-    style IS fill:#81C784
-```
-
-**No copies are made.** If linking fails (cross-filesystem, permissions), the operation fails with a clear error message.
-
----
-
-## Ports (Inter-Board Connections)
-
-Ports document electrical connections between boards (connectors, flex cables, etc.).
-
-### Defining Ports
-
-1. Select a board in the manager
-2. Click "Ports" button
-3. Add ports with:
-   - **Name**: Identifier (e.g., "USB_D+")
-   - **Net**: Associated net name
-   - **Side**: Which board edge (left/right/top/bottom)
-   - **Position**: Location along edge (0-100%)
-
-### What Ports Do
-
-1. **Block Footprints**: Ports appear as pads on generated block footprints
-2. **DRC Filtering**: "Unconnected" violations for port nets are filtered (expected to leave the board)
-
-```mermaid
-graph LR
-    subgraph Power["Power Board Block"]
-        PP1((VIN))
-        PP2((GND))
-        PP3((5V))
-    end
-    
-    subgraph IO["IO Board Block"]
-        IP1((5V))
-        IP2((GND))
-        IP3((DATA))
-    end
-    
-    PP3 -.->|connector| IP1
-    PP2 -.->|connector| IP2
-    
-    style PP3 fill:#4CAF50
-    style IP1 fill:#4CAF50
-    style PP2 fill:#607D8B
-    style IP2 fill:#607D8B
+```gitignore
+.multiboard/
+boards/.trash/
+~*.lck
 ```
 
 ---
 
 ## Troubleshooting
 
-### Common Issues
+**Run Doctor first.** It checks fifteen things and repairs most of them with one
+click.
 
-#### "kicad-cli not found"
-- Ensure KiCad is fully installed
-- Verify `kicad-cli` is in your PATH:
-  ```bash
-  kicad-cli --version
-  ```
-- On Windows, the plugin searches common install locations automatically
+| Symptom | Cause and fix |
+| --- | --- |
+| `kicad-cli not found` | Set `KICAD_CLI` to its full path. On macOS it lives inside the app bundle at `/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli` and is not on `PATH`. Doctor → *Re-detect*. |
+| "Board is open in KiCad" | Close it. If KiCad crashed, Doctor → *Clear lock files*. |
+| "Cannot link schematic" | The project and `boards/` must be on the same filesystem. On Windows, hardlinks need Developer Mode or Administrator. Network drives do not work. |
+| Footprints fail to load during Update | A library is not registered for this project. Doctor checks the project *and* global `fp-lib-table` and reports unresolvable `${...}` variables. |
+| Components do not appear after Update | Check the Components view: they may be assigned elsewhere, DNP, excluded from board, or have no footprint. The Update plan states the reason per component. |
+| Block footprints will not open | If this project was created with version 12, every generated block footprint is malformed. Doctor → *Regenerate blocks*. |
+| Search feels stale | Press F5, or `> reindex` in the palette. The index is cached per board on modification time, so this is normally instant. |
 
-#### "Board is open (lock file present)"
-- Close the PCB in all KiCad windows
-- If KiCad crashed, manually delete lock files:
-  ```
-  ~boardname.kicad_pcb.lck
-  ```
+The debug log is at `.multiboard/multiboard.log`.
 
-#### "Cannot link schematic"
-This error occurs when neither hardlinks nor symlinks succeed:
+---
 
-| Cause | Solution |
-|-------|----------|
-| Cross-filesystem | Move project to same drive as boards/ |
-| Permissions (Windows) | Enable Developer Mode or run as Administrator |
-| Network drive | Move to local storage |
+## Compatibility
 
-#### Footprints fail to load
-1. Verify footprint ID in schematic is correct
-2. Check `fp-lib-table` has the library
-3. Ensure library paths don't have unresolved `${KIPRJMOD}`
+| KiCad | Status |
+| --- | --- |
+| 10.x | **Supported.** |
+| 9.x and earlier | Not supported. Use [release v12](https://github.com/Eliot-Abramo/Kicad-Multi-PCB/releases). |
+| 11.x | Not yet. KiCad 11 removes the SWIG `pcbnew` bindings this plugin is built on. |
 
-#### Components don't appear after Update
-- Component may already be on another board (check Status view)
-- Component may be DNP or excluded
-- Component may have no footprint assigned
+On KiCad 11: the replacement is the IPC API, but as of KiCad 10 it cannot read
+schematics, cannot run headless, and explicitly cannot open or switch documents —
+all three of which this plugin's workflow requires. The port is planned and the
+code is already structured for it; see
+[`multiboard/backend/ipc_backend.py`](multiboard/backend/ipc_backend.py) for
+exactly what is blocked and what changes when 11 lands. The CLI already works
+without `pcbnew` and is unaffected.
 
-### Debug Log
+---
 
-The plugin writes to `multiboard_debug.log` in your project root. Check this file for detailed error information.
+## Architecture
+
+```text
+multiboard/
+├── core/          pure Python — never imports pcbnew or wx
+│   ├── sexpr.py       tolerant s-expression scanner
+│   ├── pcb_scan.py    read a .kicad_pcb as text
+│   ├── netlist.py     read the schematic via kicad-cli
+│   ├── index.py       the three-layer ownership model
+│   ├── rules.py       assignment rules
+│   ├── plan.py        what an update would do
+│   ├── doctor.py      diagnostics and repairs
+│   └── workspace.py   a project, without KiCad
+├── backend/       the only place that imports pcbnew
+├── ui/            wxPython
+├── cli.py         headless entry point
+└── compat.py      KiCad 10 API surface and probes
+```
+
+`core/` may not import `pcbnew` or `wx`. That rule is enforced by a test that
+walks the AST of every module, and it is what buys two things: the CLI runs on a
+bare Python, and the KiCad 11 port is a bounded change rather than a rewrite.
+
+Reading a board as text rather than through `pcbnew.LoadBoard` is roughly ten
+times faster and runs off the GUI thread, which is what makes per-keystroke search
+possible.
+
+### Development
+
+```console
+pip install -e ".[dev]"
+pytest                              # 280+ tests, no KiCad needed
+ruff check multiboard/ tests/
+ruff format --check multiboard/ tests/
+python tools/check_version.py       # every version string agrees
+python tools/build_package.py       # reproducible PCM archive
+```
+
+---
+
+## Upgrading from version 12
+
+Your `.kicad_multiboard.json` is migrated automatically and losslessly on first
+open; a `.bak` is kept. Boards, descriptions, and ports carry over. Assignment
+starts empty, which reproduces version 12's behaviour exactly — ownership derived
+purely from placement — until you create a rule.
+
+Two things are worth doing straight away:
+
+1. **Doctor → Regenerate blocks.** Every block footprint version 12 wrote carries
+   stray closing parentheses and cannot be parsed by KiCad. Nothing reported it
+   because nothing ever tried to read them.
+2. **Adopt your placements.** In the Components view, select everything and choose
+   *Adopt placement as intent*. That turns "this happens to be here" into "this
+   belongs here", after which conflicts become meaningful.
+
+Also fixed in this release, among others: the filter box (Backspace used to prompt
+to delete a board), a stale netlist silently updating a board, footprints never
+being linked to their schematic symbols, nets never being cleared, KiCad 9 being
+preferred over KiCad 10 when both were installed, `kicad-cli` being undiscoverable
+on macOS, and a board-deletion path that could target the project's parent
+directory.
 
 ---
 
 ## Contributing
 
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Follow the existing code style
-4. Test with real KiCad projects
-5. Submit a pull request
-
-### Code Style
-
-- **Python**: Follow PEP 8, use type hints
-- **Docstrings**: Google style
-- **Comments**: Explain *why*, not *what*
-
----
+Pull requests welcome. Please keep `core/` free of `pcbnew` and `wx` — there is a
+test for it — add a test for anything behavioural, and run `ruff check` and
+`ruff format` before submitting.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
-
----
+MIT — see [LICENSE](LICENSE).
 
 ## Acknowledgments
-- Eliot Abramo - Development of project and maintainer - Initial Idea, developement and documentation
----
 
-*Built with ❤️ for the KiCad community*
+Eliot Abramo — original idea, development, and maintenance.
