@@ -46,32 +46,72 @@ def available() -> bool:
         return False
 
 
+UNKNOWN_VERSION = ()
+"""Returned when the running KiCad's version cannot be determined at all."""
+
+_VERSION_TEXT = None
+
+
 def kicad_version() -> tuple[int, ...]:
-    """``(major, minor, patch)`` of the running KiCad."""
-    global _version
+    """
+    ``(major, minor, patch)`` of the running KiCad, or :data:`UNKNOWN_VERSION`.
+
+    Every accessor here is treated as untrusted. ``GetMajorMinorPatchTuple()``
+    is documented to return a tuple of ints, but in a real KiCad 10 build SWIG
+    hands back an opaque ``SwigPyObject`` wrapping ``std::tuple`` that is not
+    iterable -- so ``tuple(...)`` raises ``TypeError``, not ``AttributeError``.
+    Anything that is not a plain string or a genuinely iterable sequence falls
+    through to parsing the textual accessors, which are stable.
+    """
+    global _version, _VERSION_TEXT
     if _version is not None:
         return _version
 
-    mod = pcbnew()
-    try:
-        _version = tuple(mod.GetMajorMinorPatchTuple())
-        return _version
-    except AttributeError:
-        pass
-
     import re
 
-    for fn in ("GetMajorMinorPatchVersion", "GetBuildVersion", "Version"):
-        try:
-            m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", str(getattr(mod, fn)()))
-            if m:
-                _version = tuple(int(g) for g in m.groups() if g is not None)
-                return _version
-        except AttributeError:
-            continue
+    mod = pcbnew()
+    pattern = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 
-    _version = (0, 0, 0)
+    # Structured accessor first, but only if it really yields numbers.
+    try:
+        raw = mod.GetMajorMinorPatchTuple()
+        parts = tuple(int(x) for x in raw)
+        if len(parts) >= 2:
+            _version = parts
+            _VERSION_TEXT = ".".join(str(p) for p in parts)
+            return _version
+    except Exception:
+        pass
+
+    # Textual accessors. str() on a SWIG object is always safe, and these
+    # return plain strings like "10.0.5" in every build.
+    for fn in (
+        "GetMajorMinorPatchVersion",
+        "GetMajorMinorVersion",
+        "GetSemanticVersion",
+        "GetBaseVersion",
+        "GetBuildVersion",
+        "Version",
+        "FullVersion",
+    ):
+        try:
+            text = str(getattr(mod, fn)())
+        except Exception:
+            continue
+        match = pattern.search(text)
+        if match:
+            _version = tuple(int(g) for g in match.groups() if g is not None)
+            _VERSION_TEXT = text
+            return _version
+
+    _version = UNKNOWN_VERSION
     return _version
+
+
+def kicad_version_text() -> str:
+    """The version as KiCad reported it, for diagnostics."""
+    kicad_version()
+    return _VERSION_TEXT or "unknown"
 
 
 def inproc_hint():
@@ -108,7 +148,11 @@ def inproc_hint():
             if cand.exists() and cand not in candidates:
                 candidates.append(cand)
 
-    return InProcHint(version=kicad_version(), cli_candidates=tuple(candidates))
+    version = kicad_version()
+    return InProcHint(
+        version=version or None,  # UNKNOWN_VERSION must not read as "version 0"
+        cli_candidates=tuple(candidates),
+    )
 
 
 def install_hint() -> None:
@@ -134,6 +178,13 @@ def require_supported() -> None:
         )
 
     version = kicad_version()
+
+    if not version:
+        # We could not read a version at all. pcbnew imported, so we are inside
+        # some KiCad; refusing to run on a version we merely failed to parse
+        # would be worse than proceeding. Doctor reports it separately.
+        return
+
     if version[:2] < MIN_KICAD:
         raise RuntimeError(
             f"Multi-Board Manager {'.'.join(map(str, MIN_KICAD))}+ requires KiCad "
@@ -241,7 +292,7 @@ def set_stroke(shape, width_mm: float, style: str = "solid") -> None:
 
     try:
         shape.SetWidth(mm(width_mm))
-    except AttributeError:
+    except Exception:
         pass
 
 
@@ -291,8 +342,9 @@ def fp_fields(fp) -> dict[str, str]:
     makes it the stable surface across the field-API refactor.
     """
     try:
-        return dict(fp.GetFieldsText())
-    except AttributeError:
+        # A SWIG map is usually dict()-able, but do not bet the call on it.
+        return {str(k): str(v) for k, v in fp.GetFieldsText().items()}
+    except Exception:
         pass
 
     out: dict[str, str] = {}
@@ -300,9 +352,9 @@ def fp_fields(fp) -> dict[str, str]:
         for field in fp.GetFields():
             try:
                 out[field.GetName()] = field.GetText()
-            except AttributeError:
+            except Exception:
                 continue
-    except (AttributeError, TypeError):
+    except Exception:
         pass
     return out
 
@@ -336,24 +388,24 @@ def fpid_string(fp) -> str:
     try:
         fpid = fp.GetFPID()
         return f"{fpid.GetLibNickname()}:{fpid.GetLibItemName()}"
-    except AttributeError:
+    except Exception:
         return ""
 
 
 def set_orientation(fp, degrees: float) -> None:
     try:
         fp.SetOrientationDegrees(degrees)
-    except AttributeError:
+    except Exception:
         fp.SetOrientation(angle(degrees))
 
 
 def get_orientation(fp) -> float:
     try:
         return float(fp.GetOrientationDegrees())
-    except AttributeError:
+    except Exception:
         try:
             return float(fp.GetOrientation().AsDegrees())
-        except AttributeError:
+        except Exception:
             return 0.0
 
 

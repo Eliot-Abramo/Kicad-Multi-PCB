@@ -60,7 +60,7 @@ class SwigBackend(Backend):
             try:
                 getattr(p, fn)()
                 return
-            except AttributeError:
+            except Exception:
                 continue
 
     def focus_reference(self, ref: str) -> bool:
@@ -82,7 +82,7 @@ class SwigBackend(Backend):
                 return False
             try:
                 board.ClearAllNetCodes  # noqa: B018 - presence probe only
-            except AttributeError:
+            except Exception:
                 pass
             if compat.has("FocusOnItem"):
                 p.FocusOnItem(fp)
@@ -197,11 +197,11 @@ class SwigBackend(Backend):
         # pick-and-place output.
         try:
             fp.SetAttributes(p.FP_BOARD_ONLY | p.FP_EXCLUDE_FROM_POS_FILES | p.FP_EXCLUDE_FROM_BOM)
-        except AttributeError:
+        except Exception:
             for setter in ("SetBoardOnly", "SetExcludedFromPosFiles", "SetExcludedFromBOM"):
                 try:
                     getattr(fp, setter)(True)
-                except AttributeError:
+                except Exception:
                     pass
 
         self._describe(fp, spec.description or f"Board block: {spec.name}")
@@ -214,7 +214,7 @@ class SwigBackend(Backend):
             fp.Reference().SetLayer(p.F_SilkS)
             fp.Value().SetPosition(compat.vec_mm(0, hh + 4))
             fp.Value().SetLayer(p.F_Fab)
-        except AttributeError:
+        except Exception:
             pass
 
         radius = spec.corner_radius()
@@ -267,7 +267,7 @@ class SwigBackend(Backend):
             s.SetStart(compat.vec_mm(*pts[0]))
             try:
                 s.SetMid(compat.vec_mm(*pts[1]))
-            except AttributeError:
+            except Exception:
                 pass
             s.SetEnd(compat.vec_mm(*pts[2]))
             s.SetLayer(layer)
@@ -307,7 +307,7 @@ class SwigBackend(Backend):
         compat.set_stroke(shape, 0.05, "solid")
         try:
             shape.SetFilled(True)
-        except AttributeError:
+        except Exception:
             pass
         fp.Add(shape)
 
@@ -326,7 +326,7 @@ class SwigBackend(Backend):
                 text.SetBold(True)
             if rotation:
                 text.SetTextAngle(compat.angle(rotation))
-        except AttributeError:
+        except Exception:
             pass
         fp.Add(text)
 
@@ -353,7 +353,7 @@ class SwigBackend(Backend):
         for setter, value in (("SetPinFunction", port.name), ("SetPinType", "passive")):
             try:
                 getattr(pad, setter)(value)
-            except AttributeError:
+            except Exception:
                 pass
         fp.Add(pad)
 
@@ -391,7 +391,7 @@ class SwigBackend(Backend):
             try:
                 getattr(fp, setter)(text)
                 return
-            except AttributeError:
+            except Exception:
                 continue
 
     def _save_footprint(self, lib_dir: Path, fp) -> None:
@@ -602,12 +602,12 @@ class SwigBackend(Backend):
             try:
                 if fp.IsLocked():
                     continue
-            except AttributeError:
+            except Exception:
                 pass
             for pad in fp.Pads():
                 try:
                     pad.SetNetCode(0)
-                except AttributeError:
+                except Exception:
                     try:
                         pad.SetNet(board.FindNet(0))
                     except Exception:
@@ -646,7 +646,7 @@ class SwigBackend(Backend):
 
         try:
             board.BuildConnectivity()
-        except AttributeError:
+        except Exception:
             pass
 
     def _pack(self, footprints: list[object]) -> None:
