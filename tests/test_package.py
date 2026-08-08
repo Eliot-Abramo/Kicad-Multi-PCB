@@ -47,24 +47,78 @@ def test_archive_excludes_everything_it_should(names):
 
 
 def test_pcm_layout(names):
-    """No wrapper directory; metadata and resources at the archive root."""
+    """
+    Package files sit directly under plugins/, not in a subdirectory.
+
+    PCM extracts plugins/ into <3rdparty>/plugins/<identifier>/, and KiCad
+    imports each immediate subdirectory of <3rdparty>/plugins/ that has an
+    __init__.py -- without recursing. A plugins/multiboard/__init__.py layout
+    lands one level too deep: PCM reports the package as installed and KiCad
+    never shows it.
+    """
     assert "metadata.json" in names
     assert "resources/icon.png" in names
-    assert "plugins/multiboard/__init__.py" in names
+    assert "plugins/__init__.py" in names, "the package must be importable as plugins/"
+    assert not any(n.startswith("plugins/multiboard/") for n in names), (
+        "package files are nested one level too deep to be discovered"
+    )
     assert not any(n.startswith("multiboard-") for n in names)
+
+
+def test_kicad_would_discover_the_extracted_package(archive, tmp_path):
+    """
+    Simulate PCM extraction plus KiCad's loader, and import the result.
+
+    KiCad's LoadPlugins imports a plugins-directory entry only when it is a
+    directory containing __init__.py. This reproduces that check against a real
+    extraction, under the mangled directory name PCM actually uses.
+    """
+    import importlib
+    import sys
+    import zipfile
+
+    third_party = tmp_path / "3rdparty"
+    identifier = "com.github.eliot-abramo.multi-pcb-manager".replace(".", "_")
+    target = third_party / "plugins" / identifier
+    target.mkdir(parents=True)
+
+    with zipfile.ZipFile(archive) as zf:
+        for name in zf.namelist():
+            if not name.startswith("plugins/"):
+                continue
+            dest = target / name[len("plugins/") :]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(zf.read(name))
+
+    assert (target / "__init__.py").exists(), "KiCad skips a plugins-directory entry with no __init__.py"
+
+    # Import it the way KiCad does: by directory name, from the plugins path.
+    sys.path.insert(0, str(third_party / "plugins"))
+    try:
+        for stale in [m for m in sys.modules if m.startswith(identifier)]:
+            del sys.modules[stale]
+        module = importlib.import_module(identifier)
+        assert module.__version__
+        # Relative imports must survive the renamed package.
+        importlib.import_module(f"{identifier}.core.index")
+        importlib.import_module(f"{identifier}.cli")
+    finally:
+        sys.path.remove(str(third_party / "plugins"))
+        for stale in [m for m in sys.modules if m.startswith(identifier)]:
+            del sys.modules[stale]
 
 
 def test_every_source_module_ships(names):
     shipped = {n for n in names if n.endswith(".py")}
     for package in ("multiboard", "multiboard/core", "multiboard/backend", "multiboard/ui"):
         for source in (ROOT / package).glob("*.py"):
-            expected = f"plugins/{source.relative_to(ROOT).as_posix()}"
+            expected = f"plugins/{source.relative_to(ROOT / 'multiboard').as_posix()}"
             assert expected in shipped, f"{expected} missing from the archive"
 
 
 def test_toolbar_icons_ship(names):
-    assert "plugins/multiboard/icons/icon.png" in names
-    assert "plugins/multiboard/icons/icon@2x.png" in names
+    assert "plugins/icons/icon.png" in names
+    assert "plugins/icons/icon@2x.png" in names
 
 
 def test_package_icon_is_exactly_64px():

@@ -43,12 +43,6 @@ def _register() -> None:
     try:
         import wx
 
-        from .compat import install_hint, require_supported
-        from .ui.main_dialog import MainDialog
-
-        # Tell discovery which KiCad we are inside before anything looks for one.
-        install_hint()
-
         class _MultiBoardPlugin(pcbnew.ActionPlugin):
             """Entry point shown under Tools -> External Plugins."""
 
@@ -63,6 +57,25 @@ def _register() -> None:
                     self.dark_icon_file_name = icon
 
             def Run(self):
+                # Everything heavy is imported here, not at registration time.
+                # A failure anywhere in the UI or backend would otherwise abort
+                # registration, and the plugin would simply not appear in the
+                # menu -- no error, nothing to search for. Registering first and
+                # importing on demand turns that into a message you can read.
+                try:
+                    from .compat import install_hint, require_supported
+                    from .ui.main_dialog import MainDialog
+                except Exception as exc:
+                    wx.MessageBox(
+                        f"Multi-Board Manager could not load.\n\n{exc}\n\n{traceback.format_exc()}",
+                        "Multi-Board Manager",
+                        wx.OK | wx.ICON_ERROR,
+                    )
+                    return
+
+                # Tell discovery which KiCad we are inside before anything looks.
+                install_hint()
+
                 try:
                     require_supported()
                 except Exception as exc:

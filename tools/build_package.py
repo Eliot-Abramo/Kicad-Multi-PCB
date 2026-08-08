@@ -28,12 +28,28 @@ sys.path.insert(0, str(ROOT))
 
 from multiboard.version import __version__  # noqa: E402
 
-# (source, destination-inside-archive). Directories expand to their .py files.
+# Archive layout.
+#
+# PCM extracts the ZIP's `plugins/` *contents* into
+# <3rdparty>/plugins/<identifier with dots as underscores>/, and KiCad's plugin
+# loader then imports each immediate subdirectory of <3rdparty>/plugins/ that
+# contains an __init__.py. It does not recurse.
+#
+# So the package files must sit **directly** under `plugins/` in the archive,
+# not inside a `plugins/multiboard/` subdirectory -- that would extract one level
+# too deep, leaving the identifier directory without an __init__.py, and KiCad
+# would skip the plugin entirely while PCM still listed it as installed.
+#
+# Every intra-package import is relative, so the package works under whatever
+# name PCM gives its directory.
+#
+# (source, destination-inside-archive)
 ALLOWLIST = [
     ("metadata.json", "metadata.json"),
     ("LICENSE", "plugins/LICENSE"),
     ("resources/icon.png", "resources/icon.png"),
 ]
+PACKAGE_ROOT = "multiboard"
 PACKAGE_DIRS = ["multiboard", "multiboard/core", "multiboard/backend", "multiboard/ui"]
 ICON_DIR = "multiboard/icons"
 
@@ -64,12 +80,16 @@ def collect() -> list:
             raise SystemExit(f"error: required file missing: {source}")
         entries.append((path, dest))
 
+    def inside_plugins(path: Path) -> str:
+        """Strip the package root, so multiboard/core/x.py -> plugins/core/x.py."""
+        return f"plugins/{path.relative_to(ROOT / PACKAGE_ROOT).as_posix()}"
+
     for directory in PACKAGE_DIRS:
         for path in sorted((ROOT / directory).glob("*.py")):
-            entries.append((path, f"plugins/{path.relative_to(ROOT).as_posix()}"))
+            entries.append((path, inside_plugins(path)))
 
     for path in sorted((ROOT / ICON_DIR).glob("*.png")):
-        entries.append((path, f"plugins/{path.relative_to(ROOT).as_posix()}"))
+        entries.append((path, inside_plugins(path)))
 
     return sorted(entries, key=lambda e: e[1])
 
@@ -84,8 +104,20 @@ def verify(names: list) -> None:
         raise SystemExit("error: metadata.json missing from archive")
     if "resources/icon.png" not in names:
         raise SystemExit("error: resources/icon.png missing from archive")
-    if not any(n.startswith("plugins/multiboard/") for n in names):
-        raise SystemExit("error: no plugin sources in archive")
+
+    # The single most important layout check: KiCad imports a plugins-directory
+    # entry only if it contains __init__.py, so this file must be at exactly this
+    # depth. One level deeper and PCM installs it while KiCad never sees it.
+    if "plugins/__init__.py" not in names:
+        raise SystemExit(
+            "error: plugins/__init__.py missing. Package files must sit directly "
+            "under plugins/ or KiCad will not discover the plugin."
+        )
+    if any(n.startswith(f"plugins/{PACKAGE_ROOT}/") for n in names):
+        raise SystemExit(
+            f"error: archive nests sources under plugins/{PACKAGE_ROOT}/, "
+            "which extracts one level too deep for KiCad to import."
+        )
 
 
 def check_icon() -> None:
