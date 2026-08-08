@@ -120,3 +120,81 @@ def test_version_check_script_passes():
         text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+# =============================================================================
+# PCM schema constraints
+#
+# Several fields that read like display labels are constrained to lowercase
+# kebab-case. Getting one wrong is only discovered at install time, where PCM
+# reports a bare regex and does not name the field. These assert the whole set.
+# =============================================================================
+
+PCM_SLUG = r"^[a-z][-a-z0-9]{0,48}[a-z0-9]$"
+PCM_IDENTIFIER = r"^[a-zA-Z][-a-zA-Z0-9.]{0,98}[a-zA-Z0-9]$"
+
+
+@pytest.fixture(scope="module")
+def metadata() -> dict:
+    return json.loads((ROOT / "metadata.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("field", ["type", "category"])
+def test_slug_fields_are_lowercase_kebab_case(metadata, field):
+    """`category: "Design Tools"` is rejected by PCM; `"design-tools"` is not."""
+    import re
+
+    value = metadata.get(field)
+    if value is None:
+        pytest.skip(f"{field} is optional and absent")
+    assert re.match(PCM_SLUG, value), f"{field}={value!r} must match {PCM_SLUG}"
+
+
+def test_tags_are_lowercase_kebab_case(metadata):
+    import re
+
+    tags = metadata.get("tags") or []
+    assert tags, "PCM requires at least one tag"
+    assert len(set(tags)) == len(tags), "tags must be unique"
+    bad = [t for t in tags if not re.match(PCM_SLUG, t)]
+    assert not bad, f"tags must match {PCM_SLUG}: {bad}"
+
+
+def test_identifier_is_reverse_dns(metadata):
+    import re
+
+    assert re.match(PCM_IDENTIFIER, metadata["identifier"])
+
+
+def test_required_root_fields_present(metadata):
+    for field in (
+        "name",
+        "description",
+        "description_full",
+        "identifier",
+        "type",
+        "author",
+        "license",
+        "resources",
+        "versions",
+    ):
+        assert metadata.get(field), f"PCM requires {field}"
+
+
+@pytest.mark.parametrize("field,limit", [("name", 200), ("description", 500), ("description_full", 5000)])
+def test_text_length_limits(metadata, field, limit):
+    assert len(metadata[field]) <= limit, f"{field} is {len(metadata[field])} chars, max {limit}"
+
+
+def test_status_and_platforms_are_valid(metadata):
+    entry = metadata["versions"][0]
+    assert entry["status"] in ("stable", "testing", "development", "deprecated")
+    assert set(entry.get("platforms", [])) <= {"linux", "macos", "windows"}
+
+
+def test_contact_keys_are_lowercase(metadata):
+    import re
+
+    for role in ("author", "maintainer"):
+        for key in metadata.get(role, {}).get("contact") or {}:
+            assert re.match(r"^[a-z][-a-z0-9 ]{0,48}[a-z0-9]$", key), f"{role}.contact.{key}"
