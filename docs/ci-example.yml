@@ -37,7 +37,7 @@ jobs:
       # schematic. Exit code 3.
       - name: Assignment conflicts
         run: multiboard -C . check --exit-code-conflicts
-
+ 
       # Exit code 4 on violations. Drop --exit-code-violations to report only.
       - name: DRC every board
         run: multiboard -C . drc --all --exit-code-violations --json drc.json
