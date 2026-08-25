@@ -136,7 +136,9 @@ def inproc_hint():
         seeds.append(Path(sys.executable).parent)
     module = getattr(pcbnew(), "__file__", "") or ""
     if module:
-        seeds.extend(Path(module).parents[:6])
+        # list() first: Path.parents accepts slices only on Python 3.10+,
+        # and KiCad's bundled interpreter is 3.9
+        seeds.extend(list(Path(module).parents)[:6])
 
     candidates = []
     for seed in seeds:
