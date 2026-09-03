@@ -156,7 +156,7 @@ class Theme:
         A font derived from the system UI font.
 
         v12 used absolute point sizes (15/12/10/9). macOS's default UI font is
-        2 pt, so its "10 pt body" rendered visibly small there, and on a HiDPI
+        13 pt, so its "10 pt body" rendered visibly small there, and on a HiDPI
         GTK desktop with an 11 pt system font its 15 pt header was oversized.
         Scaling relative to the system font is right everywhere.
         """

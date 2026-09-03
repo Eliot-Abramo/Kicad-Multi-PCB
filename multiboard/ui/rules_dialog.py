@@ -199,7 +199,7 @@ class RulesDialog(BaseDialog):
         self.grid = gridlib.Grid(self)
         self.grid.CreateGrid(0, 5)
         for i, (label, width) in enumerate(
-            [("On", 40), ("Match by", 20), ("Pattern", 220), ("Board", 20), ("Claims", 70)]
+            [("On", 40), ("Match by", 130), ("Pattern", 220), ("Board", 130), ("Claims", 70)]
         ):
             self.grid.SetColLabelValue(i, label)
             self.grid.SetColSize(i, width)

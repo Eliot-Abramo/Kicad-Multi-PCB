@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multiboard"
-version = "2.0.0"
+version = "13.0.0"
 description = "Manage multiple KiCad PCBs driven by a single schematic"
 readme = "README.md"
 requires-python = ">=3.9"

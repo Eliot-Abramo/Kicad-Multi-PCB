@@ -32,7 +32,7 @@ COLUMNS = [
     ("Ref", 90),
     ("Value", 120),
     ("Footprint", 190),
-    ("Sheet", 20),
+    ("Sheet", 130),
     ("Assigned", 110),
     ("Why", 170),
     ("Placed on", 120),
