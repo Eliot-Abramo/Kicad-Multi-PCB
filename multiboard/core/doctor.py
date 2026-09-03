@@ -410,6 +410,18 @@ def _check_lxml() -> Check:
         )
 
 
+TRASH_SIZE_SCAN_LIMIT = 2000
+"""
+Files to stat when sizing the trash.
+
+Doctor runs on every index refresh, and this check used to walk and stat *every*
+file under ``boards/.trash`` -- on a long-lived project, tens of thousands of
+them -- to print one KB figure. It was 80% of Doctor's cost. Bounded now: past
+this many files the total is reported as a lower bound, which answers the only
+question anyone asks of it ("is there enough in there to bother emptying?").
+"""
+
+
 def _check_trash(root: Path) -> Check:
     trash = root / BOARDS_DIR / TRASH_DIR
     if not trash.is_dir():
@@ -418,11 +430,26 @@ def _check_trash(root: Path) -> Check:
     if not entries:
         return Check("trash", OK, "Trash is empty")
 
-    size = sum(f.stat().st_size for d in entries for f in d.rglob("*") if f.is_file())
+    size, counted, capped = 0, 0, False
+    for d in entries:
+        for f in d.rglob("*"):
+            if counted >= TRASH_SIZE_SCAN_LIMIT:
+                capped = True
+                break
+            try:
+                if f.is_file():
+                    size += f.stat().st_size
+                    counted += 1
+            except OSError:
+                continue  # one unreadable file must not take the whole report down
+        if capped:
+            break
+
+    measured = f"{'over ' if capped else ''}{size // 1024} KB"
     return Check(
         "trash",
         INFO,
-        f"{len(entries)} deleted board(s) in the trash ({size // 1024} KB)",
+        f"{len(entries)} deleted board(s) in the trash ({measured})",
         "Deleted boards are moved here rather than erased, so a mistake is recoverable.\n"
         + "\n".join(d.name for d in entries),
         fix=lambda: _empty_trash(root),

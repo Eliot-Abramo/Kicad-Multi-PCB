@@ -44,6 +44,24 @@ class UnsafePath(ValueError):
 
 _SAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
+RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul", "trash"}
+    | {f"com{n}" for n in "123456789¹²³"}
+    | {f"lpt{n}" for n in "123456789¹²³"}
+    | {"conin$", "conout$"}
+)
+"""
+Directory names that cannot be created, or are ours.
+
+Windows reserves the DOS device names -- ``CON``, ``PRN``, ``AUX``, ``NUL``,
+``COM1``-``COM9`` and ``LPT1``-``LPT9`` -- in every directory, with or without
+an extension, case-insensitively. Creating ``boards/COM1/`` fails there and
+works everywhere else, which is exactly the kind of defect that ships. The
+superscript digits are the same devices under Windows' Unicode aliases.
+
+``trash`` is ours: ``boards/.trash`` is where deleted boards go.
+"""
+
 
 def sanitize_board_name(name: str) -> str:
     """
@@ -54,11 +72,33 @@ def sanitize_board_name(name: str) -> str:
     directory ``A_B`` -- as did ``"A/B"``, silently colliding.
 
     Accents are folded rather than stripped so ``Alimentación`` stays readable.
+
+    This is the chokepoint that produces every board directory name, so it is
+    also where a Windows reserved device name is defused -- a caller that skips
+    :func:`is_valid_board_name` still cannot be handed an uncreatable path.
     """
+    safe = _fold(name)
+    return f"{safe}_" if is_reserved_name(safe) else safe
+
+
+def _fold(name: str) -> str:
+    """The filesystem-safe form of ``name``, before reserved names are defused."""
     folded = unicodedata.normalize("NFKD", name)
     folded = "".join(c for c in folded if not unicodedata.combining(c))
-    safe = _SAFE_CHARS.sub("_", folded).strip("._-")
-    return safe or "board"
+    return _SAFE_CHARS.sub("_", folded).strip("._-") or "board"
+
+
+def is_reserved_name(safe: str) -> bool:
+    """
+    Whether a *sanitized* name collides with a Windows device.
+
+    Kept separate from :func:`sanitize_board_name` because the two callers want
+    opposite things: the sanitizer needs to escape such a name so a directory can
+    still be made, while the validator needs to recognise it and say so. Folding
+    them together made the validator blind -- it only ever saw the escaped form.
+    """
+    lowered = safe.lower()
+    return lowered in RESERVED_NAMES or lowered.split(".", 1)[0] in RESERVED_NAMES
 
 
 def is_valid_board_name(name: str) -> Optional[str]:
@@ -70,8 +110,10 @@ def is_valid_board_name(name: str) -> Optional[str]:
         return "Board name must contain at least one letter or digit."
     if len(stripped) > 64:
         return "Board name must be 64 characters or fewer."
-    if sanitize_board_name(stripped).lower() in {"con", "prn", "aux", "nul", "trash"}:
-        return f"'{stripped}' is a reserved name."
+
+    # Tested before the sanitizer escapes it, or this would never fire.
+    if is_reserved_name(_fold(stripped)):
+        return f"'{stripped}' is a reserved name on Windows and cannot be a directory."
     return None
 
 
@@ -105,11 +147,8 @@ def safe_relative(base: Path, candidate: str) -> Optional[Path]:
 
     resolved = base.joinpath(*parts)
     try:
-        resolved.relative_to(base) if not resolved.is_absolute() else None
         # Compare resolved forms so symlinks cannot be used to escape either.
-        base_r = base.resolve()
-        cand_r = resolved.resolve()
-        cand_r.relative_to(base_r)
+        resolved.resolve().relative_to(base.resolve())
     except (ValueError, OSError):
         return None
 
@@ -418,10 +457,21 @@ def is_pcb_open(pcb: Path, active: Optional[Path] = None) -> bool:
 
 
 def stale_locks(root: Path) -> list[Path]:
-    """Every lock file under the project, for Doctor to offer to clear."""
+    """
+    Every lock file under a *live* board, for Doctor to offer to clear.
+
+    The trash is skipped, for two reasons. A lock inside a deleted board is not
+    a lock on anything, so reporting it invited the user to "clear" something
+    meaningless. And ``boards.rglob`` descended into every trashed board on
+    every Doctor run -- which happens on every index refresh -- so a project
+    with a long deletion history paid to walk its own history repeatedly.
+    """
     out: list[Path] = []
     boards = root / BOARDS_DIR
     if boards.is_dir():
-        out.extend(sorted(boards.rglob("~*.lck")))
+        for entry in sorted(boards.iterdir()):
+            if entry.name == TRASH_DIR or not entry.is_dir():
+                continue
+            out.extend(sorted(entry.rglob("~*.lck")))
     out.extend(sorted(root.glob("~*.lck")))
     return out

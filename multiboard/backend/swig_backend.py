@@ -63,6 +63,20 @@ class SwigBackend(Backend):
             except Exception:
                 continue
 
+    def has_reference(self, ref: str) -> bool:
+        """
+        Whether ``ref`` exists on the active board. Reads only; never touches the UI.
+
+        Split out from :meth:`focus_reference` so a caller can decide what to
+        report *before* anything is driven on the canvas -- which lets the canvas
+        work be deferred out of a modal dialog's event handler.
+        """
+        try:
+            board = compat.pcbnew().GetBoard()
+            return board is not None and board.FindFootprintByReference(ref) is not None
+        except Exception:
+            return False
+
     def focus_reference(self, ref: str) -> bool:
         """
         Select and zoom to a component on the active board.
@@ -71,6 +85,10 @@ class SwigBackend(Backend):
         goes to the part. It only works for the board currently open -- KiCad 10
         offers no way to drive a different document, so the cross-board case goes
         through ``core.focus``'s handoff instead.
+
+        ``FocusOnItem`` runs a KiCad ``TOOL_MANAGER`` action against the canvas.
+        Callers must not invoke it from inside a dialog event handler; the UI
+        layer defers it (see ``MainDialog._reveal``).
         """
         p = compat.pcbnew()
         try:
@@ -80,10 +98,6 @@ class SwigBackend(Backend):
             fp = board.FindFootprintByReference(ref)
             if fp is None:
                 return False
-            try:
-                board.ClearAllNetCodes  # noqa: B018 - presence probe only
-            except Exception:
-                pass
             if compat.has("FocusOnItem"):
                 p.FocusOnItem(fp)
             self.refresh_ui()

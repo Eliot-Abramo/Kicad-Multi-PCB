@@ -104,12 +104,24 @@ class NetlistError(Exception):
     """Netlist export or parse failed, with a message fit to show the user."""
 
 
+class NetlistCancelled(NetlistError):
+    """The user cancelled the export. Not a failure; nothing to report."""
+
+
 def netlist_path(root: Path) -> Path:
     """Where exports are written -- inside the scratch dir, never the project root."""
     return root / WORK_DIR / "netlist.xml"
 
 
-def export_netlist(install, root: Path, root_sch: Path, *, variant: str = "", timeout: float = 180.0) -> Path:
+def export_netlist(
+    install,
+    root: Path,
+    root_sch: Path,
+    *,
+    variant: str = "",
+    timeout: float = 180.0,
+    pump=None,
+) -> Path:
     """
     Export the root schematic to a netlist and return its path.
 
@@ -146,7 +158,9 @@ def export_netlist(install, root: Path, root_sch: Path, *, variant: str = "", ti
         args += ["--variant", variant]
     args.append(str(root_sch))
 
-    result: CliResult = run_cli(install, args, cwd=root, timeout=timeout)
+    result: CliResult = run_cli(install, args, cwd=root, timeout=timeout, pump=pump)
+    if result.cancelled:
+        raise NetlistCancelled("Netlist export was cancelled.")
     if not result.ok:
         raise NetlistError(f"Netlist export failed.\n\n{result.failure_text()}")
 

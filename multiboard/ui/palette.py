@@ -6,8 +6,10 @@ every PCB in turn and looking for a part by eye. Press Ctrl+P, type ``R42``, and
 the answer is on screen before you finish typing; press Enter and KiCad's canvas
 goes to it.
 
-Search runs against the in-memory index, so it costs a few milliseconds even on
-a ten-thousand-component design and genuinely runs per keystroke.
+Search runs against the in-memory index and is measured at roughly 10 ms on a
+ten-thousand-component design, filters included -- so it genuinely can run as
+you type. It is debounced anyway, because the fastest query is the one that is
+never issued.
 """
 
 from typing import Callable, Optional
@@ -16,7 +18,7 @@ import wx
 
 from ..core.index import ComponentIndex, ComponentRecord, Status
 from .theme import apply_input, get_theme
-from .widgets import SPACING_MD, VirtualListCtrl
+from .widgets import SEARCH_DEBOUNCE_MS, SPACING_MD, VirtualListCtrl
 
 COMMANDS = [
     ("reindex", "Refresh index", "Re-read every board and the schematic"),
@@ -32,24 +34,24 @@ class CommandPalette(wx.Dialog):
     """
     A frameless search overlay.
 
-    Deliberately not a :class:`BaseDialog`: it has no title bar, no chrome, and
-    closes on losing focus, so it needs its own lifecycle.
+    Deliberately not a :class:`BaseDialog`: it has no title bar and no chrome, so
+    it needs its own key handling and its own lifecycle. It closes on Escape or
+    on activating a row, and it reports the choice through :attr:`result` rather
+    than calling back into its owner -- see :meth:`_activate`.
     """
 
     def __init__(
         self,
         parent,
         index: ComponentIndex,
-        on_component: Callable[[ComponentRecord], None],
-        on_command: Callable[[str], None],
         board_color: Optional[Callable[[str], wx.Colour]] = None,
     ):
         super().__init__(parent, style=wx.BORDER_SIMPLE | wx.FRAME_FLOAT_ON_PARENT, size=(760, 480))
         self.theme = get_theme()
         self.index = index
-        self.on_component = on_component
-        self.on_command = on_command
         self.board_color = board_color or (lambda _n: self.theme.accent)
+        self.result: Optional[tuple[str, object]] = None
+        """``("component", record)`` or ``("command", name)``, read after ShowModal."""
         self._records: list[ComponentRecord] = []
         self._commands: list[tuple] = []
 
@@ -65,7 +67,14 @@ class CommandPalette(wx.Dialog):
         self.input.SetFont(self.theme.font(1.3))
         self.input.SetHint("Find a component, or type > for commands")
         apply_input(self.input)
-        self.input.Bind(wx.EVT_TEXT, lambda e: self._search(self.input.GetValue()))
+
+        # Debounced: this is the fastest-typed field in the product, and running
+        # a full index query per character is work nobody sees the result of.
+        self._timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, lambda _e: self._search(self.input.GetValue()), self._timer)
+        self.input.Bind(
+            wx.EVT_TEXT, lambda e: (self._timer.Start(SEARCH_DEBOUNCE_MS, wx.TIMER_ONE_SHOT), e.Skip())
+        )
         self.input.Bind(wx.EVT_TEXT_ENTER, lambda e: self._activate())
         sizer.Add(self.input, 0, wx.ALL | wx.EXPAND, SPACING_MD)
 
@@ -175,6 +184,7 @@ class CommandPalette(wx.Dialog):
     def _on_key(self, event: wx.KeyEvent) -> None:
         key = event.GetKeyCode()
         if key == wx.WXK_ESCAPE:
+            self._timer.Stop()
             self.EndModal(wx.ID_CANCEL)
             return
         if key in (wx.WXK_DOWN, wx.WXK_UP):
@@ -198,26 +208,41 @@ class CommandPalette(wx.Dialog):
         self.input.SetFocus()
 
     def _activate(self) -> None:
+        """
+        Record the choice and close. Nothing is *acted on* here.
+
+        Acting on the selection means opening further dialogs and driving KiCad's
+        canvas. Doing that from inside this handler runs it after ``EndModal``
+        but while the palette's modal loop is still unwinding and the dialog is
+        still alive -- reentrancy that KiCad does not survive reliably.
+        :func:`open_palette` invokes the callback once the palette is gone.
+        """
         index = self.results.selected_index()
         if index < 0:
             return
 
         if self._commands:
-            command = self._commands[index][0]
-            self.EndModal(wx.ID_OK)
-            self.on_command(command)
+            if index >= len(self._commands):
+                return
+            self.result = ("command", self._commands[index][0])
+        elif index < len(self._records):
+            self.result = ("component", self._records[index])
+        else:
             return
 
-        if index < len(self._records):
-            record = self._records[index]
-            self.EndModal(wx.ID_OK)
-            self.on_component(record)
+        self._timer.Stop()  # a pending debounce must not outlive the dialog
+        self.EndModal(wx.ID_OK)
 
 
 def open_palette(parent, index, on_component, on_command, board_color=None) -> None:
-    """Show the palette and destroy it afterwards."""
-    dialog = CommandPalette(parent, index, on_component, on_command, board_color)
+    """Show the palette, destroy it, and only then act on the choice."""
+    dialog = CommandPalette(parent, index, board_color)
     try:
-        dialog.ShowModal()
+        chosen = dialog.result if dialog.ShowModal() == wx.ID_OK else None
     finally:
         dialog.Destroy()
+
+    if chosen is None:
+        return
+    kind, payload = chosen
+    (on_component if kind == "component" else on_command)(payload)

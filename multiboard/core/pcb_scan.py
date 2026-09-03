@@ -2,9 +2,12 @@
 Read a ``.kicad_pcb`` as text and extract what the component index needs.
 
 This replaces ``pcbnew.LoadBoard`` for every read-only query. LoadBoard also
-builds the connectivity engine and design-rule state we never use, costs 1-3 s
-per board, and can only run on KiCad's GUI thread -- which is why v12's board
-list froze KiCad for seconds on every keystroke in its filter box.
+builds the connectivity engine and design-rule state we never use, and costs
+1-3 s per board -- which is why v12's board list froze KiCad for seconds on
+every keystroke in its filter box.
+
+Only the fields below are extracted; see :data:`FOOTPRINT_TAGS` for why that
+distinction is worth about a factor of two.
 
 Format variation this must survive
 ----------------------------------
@@ -38,6 +41,22 @@ KNOWN_FORMATS = {
     20260206: "KiCad 10",
 }
 NEWEST_KNOWN_FORMAT = 20260206
+
+FOOTPRINT_TAGS = frozenset(
+    {"at", "layer", "uuid", "tstamp", "path", "attr", "locked", "property", "fp_text", "pad", "net"}
+)
+"""
+Exactly the child tags :func:`_parse_footprint` reads. Everything else is
+stepped over unparsed.
+
+This is where the scan time goes. A real KiCad 10 footprint spends almost all of
+its bytes on things this module has no opinion about -- ``model``, ``fp_line``,
+``fp_poly``, ``fp_arc``, ``descr``, ``tags``, ``effects``, ``zone_connect`` --
+and building tuple trees for them, once per footprint, once per board, once per
+refresh, was the single largest cost in the whole index.
+
+Add a tag here when, and only when, :func:`_parse_footprint` starts reading it.
+"""
 
 
 @dataclass(frozen=True)
@@ -158,8 +177,25 @@ class PcbScan:
         return scan
 
 
-def scan_pcb_file(path: Path) -> PcbScan:
-    """Scan a board file. Never raises for malformed content -- it reports."""
+SCAN_YIELD_EVERY = 250
+"""
+Footprints between ``on_progress`` calls during a scan.
+
+Small enough that a caller pumping an event loop stays responsive on the largest
+boards -- twenty updates across a five-thousand-footprint board -- and large
+enough that the callback costs nothing measurable.
+"""
+
+
+def scan_pcb_file(path: Path, on_progress=None) -> PcbScan:
+    """
+    Scan a board file. Never raises for malformed content -- it reports.
+
+    ``on_progress(done, total)`` is called every :data:`SCAN_YIELD_EVERY`
+    footprints. A large board takes seconds, and the caller is on KiCad's GUI
+    thread, so this is the hook that lets it keep the window alive instead of
+    going dark until the scan finishes.
+    """
     try:
         st = path.stat()
         raw = path.read_text(encoding="utf-8", errors="replace")
@@ -185,11 +221,16 @@ def scan_pcb_file(path: Path) -> PcbScan:
             f"plugin knows about ({NEWEST_KNOWN_FORMAT}). Some fields may be missed."
         )
 
-    for start, end in sexpr.iter_spans(text, "footprint"):
+    spans = list(sexpr.iter_spans(text, "footprint"))
+    total = len(spans)
+    for done, (start, end) in enumerate(spans):
         try:
-            scan.footprints.append(_parse_footprint(sexpr.parse_span(text, start, end)))
+            node = sexpr.parse_span(text, start, end, keep=FOOTPRINT_TAGS)
+            scan.footprints.append(_parse_footprint(node))
         except (sexpr.SexprError, IndexError, ValueError) as exc:
             scan.warnings.append(f"{path.name}: skipped a malformed footprint ({exc})")
+        if on_progress is not None and done % SCAN_YIELD_EVERY == 0:
+            on_progress(done, total)
 
     return scan
 

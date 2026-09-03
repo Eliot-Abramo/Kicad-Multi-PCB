@@ -76,6 +76,7 @@ def run_drc(
     ports: Optional[list[str]] = None,
     parity: bool = False,
     timeout: float = 300.0,
+    pump=None,
 ) -> DrcResult:
     """
     Run DRC on one board and parse the JSON report.
@@ -88,12 +89,21 @@ def run_drc(
     out = drc_dir(root) / f"{board_name}.drc.json"
     out.unlink(missing_ok=True)
 
-    args = ["pcb", "drc", "--format", "json", "-o", str(out), "--severity-all"]
+    # --exit-code-violations makes kicad-cli exit DRC_VIOLATIONS_EXIT when it
+    # finds something, which is why that code is in ok_codes below. Without the
+    # flag the constant was dead: a clean run and a run with a thousand
+    # violations both exited 0, and only the JSON told them apart.
+    args = ["pcb", "drc", "--format", "json", "-o", str(out), "--severity-all", "--exit-code-violations"]
     if parity:
         args.append("--schematic-parity")
     args.append(str(pcb))
 
-    cli: CliResult = run_cli(install, args, cwd=root, timeout=timeout, ok_codes=(0, *DRC_VIOLATIONS_EXIT))
+    cli: CliResult = run_cli(
+        install, args, cwd=root, timeout=timeout, ok_codes=(0, *DRC_VIOLATIONS_EXIT), pump=pump
+    )
+    if cli.cancelled:
+        result.error = "Cancelled."
+        return result
     if not cli.ok and not out.exists():
         result.error = cli.failure_text()
         return result
@@ -152,8 +162,9 @@ def run_drc_all(
     boards = list(cfg.boards.items())
 
     for i, (name, board) in enumerate(boards):
+        base = int(100 * i / max(len(boards), 1))
         if progress:
-            progress(int(100 * i / max(len(boards), 1)), f"Checking {name}...")
+            progress(base, f"Checking {name}...")
         if cancel and cancel():
             break
 
@@ -162,8 +173,15 @@ def run_drc_all(
             out[name] = DrcResult(board=name, error="PCB not found")
             continue
 
+        # DRC on a dense board runs for minutes. Without this the editor is
+        # frozen for all of it, with no way to stop.
+        def pump(elapsed: float, name=name, base=base) -> bool:
+            if progress:
+                progress(base, f"Checking {name}... ({elapsed:.0f}s)")
+            return bool(cancel and cancel())
+
         ports = [p.effective_net() for p in board.ports.values()]
-        out[name] = run_drc(install, root, name, pcb, ports=ports, parity=parity)
+        out[name] = run_drc(install, root, name, pcb, ports=ports, parity=parity, pump=pump)
 
     if progress:
         progress(100, "Done")
@@ -248,6 +266,7 @@ def run_fab(
     jobset: Optional[Path] = None,
     out_dir: Optional[Path] = None,
     timeout: float = 900.0,
+    pump=None,
 ) -> CliResult:
     """Build fabrication output for one board via ``kicad-cli jobset run``."""
     pcb = root / board.pcb_path
@@ -257,7 +276,7 @@ def run_fab(
     destination.mkdir(parents=True, exist_ok=True)
 
     args = ["jobset", "run", "--file", str(job), "--output", str(destination), str(project)]
-    return run_cli(install, args, cwd=root, timeout=timeout)
+    return run_cli(install, args, cwd=root, timeout=timeout, pump=pump)
 
 
 def board_stats(install, root: Path, pcb: Path, *, timeout: float = 120.0) -> dict:

@@ -344,6 +344,7 @@ class PortsDialog(BaseDialog):
         self.ports: dict[str, PortDef] = {
             n: PortDef(p.name, p.net, p.side, p.position) for n, p in board.ports.items()
         }
+        self._rows: list[str] = []
         self._build()
         self._refresh()
 
@@ -374,9 +375,19 @@ class PortsDialog(BaseDialog):
         self.SetSizer(sizer)
 
     def _refresh(self) -> None:
+        """
+        Redraw the list, remembering which key each row stands for.
+
+        The row order and the key are captured together on purpose. Rows used to
+        be located by re-sorting the dict at selection time while being *drawn*
+        from ``port.name``; where a config's key and name differ -- which a
+        hand-edited file or an older schema can produce -- Edit and Remove acted
+        on a different port than the one highlighted.
+        """
         self.list.DeleteAllItems()
-        for i, name in enumerate(sorted(self.ports)):
-            port = self.ports[name]
+        self._rows = sorted(self.ports, key=lambda k: self.ports[k].name.lower())
+        for i, key in enumerate(self._rows):
+            port = self.ports[key]
             self.list.InsertItem(i, port.name)
             self.list.SetItem(i, 1, port.effective_net())
             self.list.SetItem(i, 2, port.side.title())
@@ -384,7 +395,7 @@ class PortsDialog(BaseDialog):
 
     def _selected(self) -> Optional[str]:
         i = self.list.GetFirstSelected()
-        return sorted(self.ports)[i] if 0 <= i < len(self.ports) else None
+        return self._rows[i] if 0 <= i < len(self._rows) else None
 
     def _on_add(self) -> None:
         dialog = PortEditDialog(self, None, list(self.ports))

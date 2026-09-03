@@ -119,6 +119,29 @@ def plausible_kicad_version(version: Optional[Version]) -> bool:
     return bool(version) and 4 <= version[0] <= 99
 
 
+CLI_PROBE_TIMEOUT = 5.0
+"""
+Seconds to wait for a ``kicad-cli version`` probe.
+
+Discovery may try several candidates in turn, and every one of them blocks the
+caller. ``kicad-cli version`` prints a string and exits; a binary that has not
+answered in five seconds is broken or is on a filesystem that will not serve it
+promptly, and either way the next candidate is the better bet. The previous
+fifteen meant a machine with a stale KiCad on a dead network mount could stall
+the plugin for a minute before showing anything.
+"""
+
+MAX_CLI_PROBES = 6
+"""
+Candidates to probe per discovery stage.
+
+Each probe can cost up to :data:`CLI_PROBE_TIMEOUT`, so without a cap the worst
+case grows with however many plausible-looking paths a machine happens to have.
+Candidates are already ordered best-first -- newest version, nearest to the
+running KiCad -- so the answer is in the first few or it is not there.
+"""
+
+
 def _cli_version(cli: Path, prefix: tuple[str, ...] = ()) -> Optional[Version]:
     """
     Ask a kicad-cli binary for its version.
@@ -132,7 +155,7 @@ def _cli_version(cli: Path, prefix: tuple[str, ...] = ()) -> Optional[Version]:
             [*prefix, str(cli), "version"],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=CLI_PROBE_TIMEOUT,
             encoding="utf-8",
             errors="replace",
             env=child_env(),
@@ -439,7 +462,7 @@ def _discover_uncached() -> Optional[KicadInstall]:
 
     # 2. The host application's own installation, if it told us about it.
     if inproc:
-        for cli in hint.cli_candidates:
+        for cli in hint.cli_candidates[:MAX_CLI_PROBES]:
             if _cli_version(cli):
                 return _build(inproc, cli, "inproc")
 
@@ -454,7 +477,7 @@ def _discover_uncached() -> Optional[KicadInstall]:
             return _build(inproc or ver, cli, "path")
 
     # 4. Versioned roots, newest first by tuple.
-    for _ver, cli in _versioned_cli_candidates():
+    for _ver, cli in _versioned_cli_candidates()[:MAX_CLI_PROBES]:
         real = _cli_version(cli)
         if real:
             return _build(real, cli, "scan")

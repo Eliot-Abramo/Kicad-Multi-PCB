@@ -10,13 +10,14 @@ the runner on a cp1252 Windows console.
 
 import os
 import subprocess
+import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
-from ..constants import CLI_TIMEOUT
+from ..constants import CLI_POLL_INTERVAL, CLI_TIMEOUT
 from .kicad_env import KicadInstall, child_env
 
 CREATE_NO_WINDOW = 0x08000000
@@ -36,15 +37,23 @@ class CliResult:
     stderr: str = ""
     duration: float = 0.0
     timed_out: bool = False
+    cancelled: bool = False
     error: Optional[str] = None
     ok_codes: tuple[int, ...] = field(default=(0,), repr=False)
 
     @property
     def ok(self) -> bool:
-        return self.returncode in self.ok_codes and not self.timed_out and self.error is None
+        return (
+            self.returncode in self.ok_codes
+            and not self.timed_out
+            and not self.cancelled
+            and self.error is None
+        )
 
     def failure_text(self) -> str:
         """A message fit to show a user, preferring kicad-cli's own words."""
+        if self.cancelled:
+            return "Cancelled."
         if self.timed_out:
             return f"kicad-cli timed out after {self.duration:.0f}s: {' '.join(self.argv[1:4])}"
         if self.error:
@@ -64,6 +73,7 @@ def run_cli(
     cwd: Path,
     timeout: float = CLI_TIMEOUT,
     ok_codes: tuple[int, ...] = (0,),
+    pump: Optional[Callable[[float], bool]] = None,
 ) -> CliResult:
     """
     Run ``kicad-cli <args>``.
@@ -71,6 +81,18 @@ def run_cli(
     ``ok_codes`` exists because ``pcb drc --exit-code-violations`` deliberately
     exits non-zero when it finds violations, which is a successful run for our
     purposes. Callers that care about violations read the JSON report.
+
+    ``pump`` is called every :data:`CLI_POLL_INTERVAL` seconds with the elapsed
+    time while the child runs; returning True kills it and reports
+    ``cancelled``. That is how the plugin stays responsive: a netlist export
+    takes seconds and a DRC can take minutes, and ``subprocess.run`` would block
+    KiCad's GUI thread for all of it -- frozen window, dead Cancel button, and
+    an operating-system "not responding" prompt on a slow project.
+
+    Output goes to temporary files rather than pipes. Polling a process whose
+    pipes you are not draining deadlocks as soon as it fills a pipe buffer, and
+    a verbose DRC report will; a spool file has no such limit and behaves the
+    same on all three platforms.
     """
     if install is None or install.cli is None:
         raise CliUnavailable(
@@ -86,19 +108,21 @@ def run_cli(
 
     start = time.monotonic()
     try:
-        proc = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            cwd=str(cwd),
-            timeout=timeout,
-            env=child_env(),
-            **kwargs,
-        )
-    except subprocess.TimeoutExpired:
-        return CliResult(argv, -1, duration=time.monotonic() - start, timed_out=True, ok_codes=ok_codes)
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            proc = subprocess.Popen(argv, stdout=out, stderr=err, cwd=str(cwd), env=child_env(), **kwargs)
+            timed_out, cancelled = _wait(proc, start, timeout, pump)
+            out.seek(0)
+            err.seek(0)
+            return CliResult(
+                argv=argv,
+                returncode=proc.returncode if proc.returncode is not None else -1,
+                stdout=out.read().decode("utf-8", "replace"),
+                stderr=err.read().decode("utf-8", "replace"),
+                duration=time.monotonic() - start,
+                timed_out=timed_out,
+                cancelled=cancelled,
+                ok_codes=ok_codes,
+            )
     except OSError as exc:
         return CliResult(
             argv,
@@ -108,11 +132,27 @@ def run_cli(
             ok_codes=ok_codes,
         )
 
-    return CliResult(
-        argv=argv,
-        returncode=proc.returncode,
-        stdout=proc.stdout or "",
-        stderr=proc.stderr or "",
-        duration=time.monotonic() - start,
-        ok_codes=ok_codes,
-    )
+
+def _wait(proc, start: float, timeout: float, pump) -> tuple[bool, bool]:
+    """Poll until the child exits, the timeout expires, or ``pump`` cancels."""
+    while proc.poll() is None:
+        elapsed = time.monotonic() - start
+        if elapsed > timeout:
+            _terminate(proc)
+            return True, False
+        if pump is not None and pump(elapsed):
+            _terminate(proc)
+            return False, True
+        time.sleep(CLI_POLL_INTERVAL)
+    return False, False
+
+
+def _terminate(proc) -> None:
+    """Stop a child, escalating to kill. Always leaves it reaped."""
+    for stop in (proc.terminate, proc.kill):
+        try:
+            stop()
+            proc.wait(timeout=5)
+            return
+        except (OSError, subprocess.SubprocessError):
+            continue

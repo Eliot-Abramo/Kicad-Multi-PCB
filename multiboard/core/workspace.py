@@ -16,7 +16,7 @@ from ..constants import BLOCK_LIB_NAME, BOARDS_DIR, CONFIG_FILE, DEBUG_LOG_NAME
 from . import kicad_env
 from .config import load, save
 from .index import ComponentIndex
-from .netlist import NetlistError, export_netlist, netlist_path
+from .netlist import NetlistCancelled, NetlistError, export_netlist, netlist_path
 from .project import find_project_root, work_dir
 
 RE_LIB_ENTRY = re.compile(
@@ -32,6 +32,7 @@ class RefreshResult:
 
     stats: object = None
     netlist_error: str = ""
+    cancelled: bool = False
     warnings: list[str] = None
 
     def __post_init__(self):
@@ -46,12 +47,29 @@ class Workspace:
         self.root = find_project_root(Path(project_dir).expanduser())
         self.config_path = self.root / CONFIG_FILE
         self.config, self.config_warning = load(self.config_path)
-        self.install = kicad_env.discover()
         self.index = ComponentIndex(self.root, self.config)
         self._lib_paths: Optional[dict[str, Path]] = None
 
         if not self.config.root_schematic:
             self._autodetect_root_files()
+
+    @property
+    def install(self):
+        """
+        The resolved KiCad installation, discovered on first use.
+
+        Deliberately not resolved in ``__init__``. Discovery runs ``kicad-cli
+        version`` against each candidate path, and constructing a Workspace is
+        the first thing the plugin does when the user opens it -- so the editor
+        sat frozen, with no window drawn and nothing to look at, for as long as
+        those probes took. Nothing needed to open the window needs this; the
+        netlist export is the first thing that does, and by then there is a
+        progress dialog to explain the wait.
+
+        Delegated rather than cached here on purpose: ``kicad_env`` holds the
+        one cache, so Doctor's "Re-detect" invalidates it for everyone.
+        """
+        return kicad_env.discover()
 
     # =====================================================================
     # Config
@@ -104,6 +122,11 @@ class Workspace:
         A netlist export failure is reported but not fatal: the board half of the
         index is still useful, and telling the user "I can see what is on your
         boards but not what your schematic says" beats showing nothing.
+
+        The export is the slowest step and it is an external process, so it is
+        driven through a pump: ``progress`` is called while kicad-cli runs, which
+        is what keeps the window painting and the Cancel button live rather than
+        freezing the editor for the duration.
         """
         out = RefreshResult()
         netlist = netlist_path(self.root)
@@ -115,8 +138,19 @@ class Workspace:
             else:
                 if progress:
                     progress(2, "Exporting netlist...")
+
+                def pump(elapsed: float) -> bool:
+                    if progress:
+                        progress(2, f"Exporting netlist... ({elapsed:.0f}s)")
+                    return bool(cancel and cancel())
+
                 try:
-                    netlist = export_netlist(self.install, self.root, sch, variant=self.config.variant)
+                    netlist = export_netlist(
+                        self.install, self.root, sch, variant=self.config.variant, pump=pump
+                    )
+                except NetlistCancelled:
+                    out.cancelled = True
+                    return out
                 except NetlistError as exc:
                     out.netlist_error = str(exc)
                 except Exception as exc:
@@ -233,6 +267,10 @@ class Workspace:
 
         self._lib_paths = out
         return out
+
+    def invalidate_lib_paths(self) -> None:
+        """Forget the resolved library table, after something changed it."""
+        self._lib_paths = None
 
     def _path_variables(self) -> dict[str, str]:
         import os

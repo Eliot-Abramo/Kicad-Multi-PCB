@@ -160,7 +160,9 @@ class Badge(wx.Panel):
         self._color = color or self.theme.accent
         self._filled = filled
         self._padding = padding
+        self._fixed_size = False
         self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
+        self.SetFont(self.theme.small_font())
         self.Bind(wx.EVT_PAINT, self._on_paint)
         self._resize()
 
@@ -171,14 +173,28 @@ class Badge(wx.Panel):
         self._resize()
         self.Refresh()
 
+    def fix_size(self, size: tuple[int, int]) -> None:
+        """Pin the badge to ``size``, so relabelling cannot resize it.
+
+        Used for the status dot, which carries a colour rather than text and must
+        stay a dot however often the status line is updated.
+        """
+        self._fixed_size = True
+        self.SetMinSize(size)
+        self.SetSize(size)
+
     def retheme(self) -> None:
         self.theme = get_theme()
+        self.SetFont(self.theme.small_font())
         self.Refresh()
 
     def _resize(self) -> None:
-        dc = wx.ClientDC(self)
-        dc.SetFont(self.theme.small_font())
-        w, h = dc.GetTextExtent(self._label or " ")
+        if self._fixed_size:
+            return
+        # wx.Window.GetTextExtent, not a wx.ClientDC: a ClientDC on a window that
+        # has not been realised yet is undefined on Windows and macOS, and this
+        # runs from __init__.
+        w, h = self.GetTextExtent(self._label or " ")
         self.SetMinSize((w + self._padding * 2, h + 6))
 
     def _on_paint(self, _event) -> None:
@@ -272,23 +288,70 @@ class Banner(wx.Panel):
         self.Refresh()
 
 
+SEARCH_DEBOUNCE_MS = 120
+"""
+Quiet period before a typed query is run.
+
+Just below the point where a pause reads as lag, and long enough that a burst of
+typing issues one query instead of one per character. Typing "board:Power" used
+to run eleven full searches, ten of whose results were never looked at.
+"""
+
+
 class SearchBox(wx.SearchCtrl):
     """
     A search field that does not fight the platform.
 
     Left entirely to the native renderer -- no forced background -- which is the
     simplest way to be correct in both light and dark mode.
+
+    ``on_change`` is debounced: it fires once the user stops typing, not once per
+    keystroke. Clearing the box reports immediately, because there is no result
+    to compute and the response should feel instant.
     """
 
-    def __init__(self, parent, placeholder: str = "Search...", on_change=None, size=(280, -1)):
+    def __init__(
+        self,
+        parent,
+        placeholder: str = "Search...",
+        on_change=None,
+        size=(280, -1),
+        debounce_ms: int = SEARCH_DEBOUNCE_MS,
+    ):
         super().__init__(parent, size=size, style=wx.TE_PROCESS_ENTER)
         self.SetDescriptiveText(placeholder)
         self.ShowSearchButton(True)
         self.ShowCancelButton(True)
         self.SetFont(get_theme().body_font())
+
+        self._on_change = on_change
+        self._timer = None
         if on_change:
-            self.Bind(wx.EVT_TEXT, lambda e: (on_change(self.GetValue()), e.Skip()))
-            self.Bind(wx.EVT_SEARCHCTRL_CANCEL_BTN, lambda e: (self.SetValue(""), on_change("")))
+            self._timer = wx.Timer(self)
+            self._debounce_ms = max(0, debounce_ms)
+            self.Bind(wx.EVT_TIMER, lambda _e: self._fire(), self._timer)
+            self.Bind(wx.EVT_TEXT, self._queue)
+            self.Bind(wx.EVT_SEARCHCTRL_CANCEL_BTN, self._on_cancel)
+            # A running wx.Timer outliving its window asserts on shutdown.
+            self.Bind(wx.EVT_WINDOW_DESTROY, self._on_destroy)
+
+    def _queue(self, event) -> None:
+        self._timer.Start(self._debounce_ms, wx.TIMER_ONE_SHOT)
+        event.Skip()
+
+    def _fire(self) -> None:
+        if self and self._on_change:
+            self._on_change(self.GetValue())
+
+    def _on_cancel(self, _event) -> None:
+        self._timer.Stop()
+        self.SetValue("")
+        self._on_change("")
+
+    def _on_destroy(self, event) -> None:
+        if self._timer is not None:
+            self._timer.Stop()
+        event.Skip()
 
     def retheme(self) -> None:
         self.SetFont(get_theme().body_font())
@@ -303,7 +366,9 @@ class StatusBar(wx.Panel):
         sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         self.dot = Badge(self, "", self.theme.success, filled=True, padding=3)
-        self.dot.SetMinSize((10, 10))
+        # Pin it: set_status() relabels the dot on every update, and a plain
+        # SetMinSize would be recomputed away by the next _resize().
+        self.dot.fix_size((10, 10))
         sizer.Add(self.dot, 0, wx.ALL | wx.ALIGN_CENTER_VERTICAL, SPACING_SM)
 
         self.label = wx.StaticText(self, label="Ready")
@@ -345,11 +410,41 @@ class FilterChips(wx.Panel):
         self.theme = get_theme()
         self._on_change = on_change
         self._buttons: list[tuple[str, wx.ToggleButton, Optional[wx.Colour]]] = []
+        self._pending: Optional[list] = None
         self.sizer = wx.WrapSizer(wx.HORIZONTAL)
         self.SetSizer(self.sizer)
 
     def set_chips(self, chips: Sequence[tuple[str, str, int, Optional[wx.Colour]]]) -> None:
-        """``chips`` is ``(key, label, count, colour)``. Rebuilds the row."""
+        """
+        ``chips`` is ``(key, label, count, colour)``.
+
+        Toggling a chip calls back into the owner, which recomputes the row and
+        lands here -- so a naive rebuild destroys the very button whose
+        ``EVT_TOGGLEBUTTON`` is still being dispatched, and wx then returns into
+        freed memory. Two guards: when the key sequence is unchanged (the whole
+        toggle path) nothing is destroyed at all, only labels are updated; and a
+        genuine rebuild is deferred until the current event has finished.
+        """
+        chips = list(chips)
+        if [c[0] for c in chips] == [key for key, _b, _c in self._buttons]:
+            self._relabel(chips)
+            return
+
+        self._pending = chips
+        wx.CallAfter(self._rebuild)
+
+    def _relabel(self, chips: list) -> None:
+        for (_key, button, _old), (_k, label, count, colour) in zip(self._buttons, chips):
+            button.SetLabel(f"{label} ({count})" if count is not None else label)
+            if colour is not None:
+                button.SetForegroundColour(self.theme.readable(colour))
+        self.Layout()
+
+    def _rebuild(self) -> None:
+        chips, self._pending = self._pending, None
+        if chips is None or not self:
+            return
+
         selected = self.selected()
         self.sizer.Clear(delete_windows=True)
         self._buttons = []
@@ -366,9 +461,18 @@ class FilterChips(wx.Panel):
             self._buttons.append((key, button, colour))
 
         self.Layout()
+        parent = self.GetParent()
+        if parent:
+            parent.Layout()
 
     def selected(self) -> list[str]:
         return [key for key, button, _ in self._buttons if button.GetValue()]
+
+    def select(self, keys) -> None:
+        """Set exactly ``keys``, leaving every other chip off."""
+        wanted = set(keys)
+        for key, button, _ in self._buttons:
+            button.SetValue(key in wanted)
 
     def clear(self) -> None:
         for _, button, _ in self._buttons:
@@ -492,6 +596,7 @@ class VirtualListCtrl(wx.ListCtrl):
         super().__init__(parent, style=wx.LC_REPORT | wx.LC_VIRTUAL | wx.LC_SINGLE_SEL, **kwargs)
         self._rows: list[Sequence[str]] = []
         self._colors: list[Optional[wx.Colour]] = []
+        self._attrs: dict[tuple, wx.ItemAttr] = {}
         self.theme = get_theme()
 
         for i, (title, width) in enumerate(columns):
@@ -514,11 +619,30 @@ class VirtualListCtrl(wx.ListCtrl):
             return ""
 
     def OnGetItemAttr(self, item: int):
+        """
+        The attribute for one row, or None.
+
+        **The returned object must outlive the call.** wxWidgets stores this
+        pointer and dereferences it after the handler returns; building a fresh
+        ``wx.ItemAttr`` here means Python frees it the moment the reference count
+        drops, and the next repaint reads freed memory. That is a hard crash, and
+        it is what took KiCad down whenever a "Find component" result was a
+        conflict -- conflicts are the only rows the palette colours.
+
+        So attributes are interned per colour and owned by the control. The set
+        is naturally bounded: colours come from the theme's fixed status palette
+        and the ten board hues.
+        """
         color = self._colors[item] if item < len(self._colors) else None
         if color is None:
             return None
-        attr = wx.ItemAttr()
-        attr.SetTextColour(color)
+
+        key = tuple(color.Get())
+        attr = self._attrs.get(key)
+        if attr is None:
+            attr = wx.ItemAttr()
+            attr.SetTextColour(color)
+            self._attrs[key] = attr
         return attr
 
     def selected_index(self) -> int:

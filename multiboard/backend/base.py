@@ -99,8 +99,16 @@ class Backend:
         """The board open in this editor, if any."""
         return None
 
+    def has_reference(self, ref: str) -> bool:
+        """Whether ``ref`` is on the active board. Read-only; safe from any context."""
+        return False
+
     def focus_reference(self, ref: str) -> bool:
-        """Select and zoom to a component on the active board."""
+        """Select and zoom to a component on the active board.
+
+        Drives KiCad's canvas, so callers must defer it out of dialog event
+        handlers rather than calling it inline.
+        """
         return False
 
     def refresh_ui(self) -> None:

@@ -87,6 +87,14 @@ CLI_TIMEOUT = 180.0
 """Default seconds before a kicad-cli invocation is killed. v12 had no timeout,
 so a hung kicad-cli froze KiCad permanently."""
 
+CLI_POLL_INTERVAL = 0.05
+"""
+Seconds between checks on a running kicad-cli.
+
+Twenty times a second: fast enough that Cancel feels immediate and a progress
+bar animates smoothly, slow enough that polling costs nothing measurable.
+"""
+
 DISCOVERY_CACHE_TTL = 60.0
 """Seconds to remember a failed KiCad installation lookup."""
 
