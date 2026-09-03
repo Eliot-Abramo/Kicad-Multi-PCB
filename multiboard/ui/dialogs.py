@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 Supporting dialogs: Doctor, ports, new board, reports, and onboarding.
 

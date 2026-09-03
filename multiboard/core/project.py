@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 Project layout, path safety, schematic linking, and lock detection.
 

@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 Assert every version string in the repository agrees with ``version.py``.
 

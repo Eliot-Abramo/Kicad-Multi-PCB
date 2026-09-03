@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 Accent legibility, checked arithmetically so it holds on platforms we cannot test.
 

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 Theming derived from the platform, not hardcoded.
 

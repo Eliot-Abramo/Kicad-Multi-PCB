@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 Configuration data model (``.kicad_multiboard.json``), schema v3.
 

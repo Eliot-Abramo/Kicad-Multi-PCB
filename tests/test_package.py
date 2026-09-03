@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 Packaging: the archive must contain exactly what PCM expects and nothing else.
 

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 Read a ``.kicad_pcb`` as text and extract what the component index needs.
 

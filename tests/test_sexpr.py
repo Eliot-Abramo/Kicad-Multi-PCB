@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """Scanner tolerance: the shapes real KiCad files actually take."""
 
 import pytest

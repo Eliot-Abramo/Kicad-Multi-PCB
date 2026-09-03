@@ -1,3 +1,6 @@
+<!-- Copyright (c) 2026 Eliot Abramo -->
+<!-- SPDX-License-Identifier: MIT -->
+
 # Multi-Board PCB Manager
 
 [![KiCad-10.0](https://img.shields.io/badge/KiCad-10.0-blue)](https://www.kicad.org/)

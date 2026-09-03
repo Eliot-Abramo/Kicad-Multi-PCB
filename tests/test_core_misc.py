@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """Config migration, netlist parsing, board scanning, colour maths, discovery."""
 
 import json

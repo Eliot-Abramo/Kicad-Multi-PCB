@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 The pcbnew API surface, exercised against the shapes a real KiCad returns.
 

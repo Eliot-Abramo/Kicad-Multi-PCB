@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 Colour maths, kept free of wx so it can be unit-tested on a headless runner.
 

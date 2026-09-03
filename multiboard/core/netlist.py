@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 Schematic-side data, via ``kicad-cli sch export netlist --format kicadxml``.
 

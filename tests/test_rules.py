@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """Rule matching, including the numeric-range case string comparison gets wrong."""
 
 import pytest

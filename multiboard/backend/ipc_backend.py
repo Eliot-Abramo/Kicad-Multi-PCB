@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Eliot Abramo
+# SPDX-License-Identifier: MIT
+
 """
 IPC API backend -- a deliberate stub, kept as a record and a landing site.
 
