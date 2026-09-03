@@ -5,10 +5,15 @@ Why this exists
 ---------------
 The component index needs to know what is on every board. Doing that with
 ``pcbnew.LoadBoard`` costs 1-3 s per board because it also builds the
-connectivity engine and the design-rule state, and it can only run on KiCad's
-GUI thread. Scanning the file as text costs ~0.2 s for a 10 MB board, runs on a
-worker thread, needs no pcbnew at all, and works on boards a given KiCad
-version could not load.
+connectivity engine and the design-rule state. Scanning the file as text needs
+no pcbnew at all and works on boards a given KiCad version could not load.
+
+It is not free: about **0.25 s per MB** on a KiCad-10-shaped board, so a very
+large one takes a couple of seconds. (An earlier version of this docstring
+claimed 0.2 s for a 10 MB board, which was off by a factor of twenty.) Two
+things keep that off the user's path: scans are cached on ``(mtime_ns, size)``
+so only an edited board is re-read, and ``scan_pcb_file`` reports progress while
+it works so the caller can keep its event loop alive.
 
 The scanner is deliberately *not* a full parser. ``iter_spans`` makes one linear
 pass tracking paren depth and string state, yielding byte offsets for the
@@ -22,8 +27,27 @@ non-ASCII reference designators, and truncated files (which report rather than
 raise, so a half-written board still yields what it has).
 """
 
+import re
 from collections.abc import Iterator
 from typing import Optional, Union
+
+# The scanner is the hot path: it runs over every board file on every refresh,
+# on the GUI thread. Each of these replaces a per-character Python loop with one
+# C-level scan, which is where the bulk of the speed comes from -- the logic is
+# unchanged, and tests/test_sexpr.py pins the behaviour either way.
+_STRUCTURAL = re.compile(r'["();]')
+"""Characters that can change parser state. Everything between them is skipped."""
+
+_PARENS = re.compile(r'["()]')
+
+_OPEN_TAG = re.compile(r'[ \t\r\n]*([^ \t\r\n()"]*)')
+"""Whitespace then the tag token, anchored just after an opening paren."""
+
+_STRING = re.compile(r'"(?:[^"\\]|\\.)*(?:"|\Z)', re.DOTALL)
+"""A quoted token, escapes included. The ``\\Z`` arm matches an unterminated one,
+which :func:`_skip_string` also treats as running to end of file."""
+
+_LINE_END = re.compile(r"[^\n\r]*")
 
 Atom = str
 Node = tuple[str, list[Union["Node", Atom]]]
@@ -51,49 +75,46 @@ def iter_spans(text: str, tag: str, depth: int = 1) -> Iterator[tuple[int, int]]
     know that happened.
     """
     want = tag
-    n = len(text)
-    i = 0
     level = -1  # -1 == outside the document node
-    # Stack of (level, start_offset) for nodes we are inside and may want.
-    pending: list[tuple[int, int, bool]] = []
+    start = -1  # offset of the wanted node we are inside, or -1
 
-    while i < n:
+    # One C-level pass over the file yields every character that can change
+    # parser state; a repeated `search(text, pos)` would restart the engine at
+    # each one. Regions we must not interpret -- string bodies and comments --
+    # are stepped over by ignoring matches below this offset.
+    opaque_until = 0
+
+    for match in _STRUCTURAL.finditer(text):
+        i = match.start()
+        if i < opaque_until:
+            continue
         c = text[i]
 
         if c == '"':
-            i = _skip_string(text, i)
+            opaque_until = _skip_string(text, i)
             continue
 
-        if c == ";" and (i == 0 or text[i - 1] in "\n\r"):
+        if c == ";":
             # KiCad does not emit comments, but hand-edited files may have them.
-            while i < n and text[i] not in "\n\r":
-                i += 1
+            if i == 0 or text[i - 1] in "\n\r":
+                opaque_until = _LINE_END.match(text, i).end()
             continue
 
         if c == "(":
             level += 1
-            start = i
-            j = i + 1
-            while j < n and text[j] in " \t\r\n":
-                j += 1
-            k = j
-            while k < n and text[k] not in ' \t\r\n()"':
-                k += 1
-            name = text[j:k]
-            pending.append((level, start, level == depth and name == want))
-            i = k
+            # Read the tag only at the level being searched. Doing it at every
+            # opening paren allocates a match object per node in the file, which
+            # on a real board is two orders of magnitude more work than this.
+            if level == depth and _OPEN_TAG.match(text, i + 1).group(1) == want:
+                start = i
             continue
 
-        if c == ")":
-            if pending:
-                _plevel, pstart, wanted = pending.pop()
-                if wanted:
-                    yield (pstart, i + 1)
-            level -= 1
-            i += 1
-            continue
-
-        i += 1
+        # ")". Nodes nest properly, so the close that returns us from `depth` to
+        # `depth - 1` is this node's own -- which is why no stack is needed.
+        if level == depth and start >= 0:
+            yield (start, i + 1)
+            start = -1
+        level -= 1
 
 
 def scan_health(text: str) -> tuple[bool, int]:
@@ -105,41 +126,47 @@ def scan_health(text: str) -> tuple[bool, int]:
     ``-2`` on every file it wrote, which is why every generated block footprint
     was unparseable; this function is what the Doctor check uses to detect the
     damage.
+
+    Counted over the whole text, then corrected for parens inside string
+    literals. ``str.count`` runs in C over the file in one pass, where the
+    obvious character loop runs in Python over every byte. Only the literals
+    themselves are materialised, and KiCad's are short, so peak memory does not
+    depend on file size.
     """
-    n = len(text)
-    i = 0
-    depth = 0
-    while i < n:
-        c = text[i]
-        if c == '"':
-            i = _skip_string(text, i)
-            continue
-        if c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-        i += 1
+    depth = text.count("(") - text.count(")")
+    for match in _STRING.finditer(text):
+        literal = match.group()
+        depth -= literal.count("(") - literal.count(")")
     return depth == 0, depth
 
 
 def _skip_string(text: str, i: int) -> int:
-    """Given ``text[i] == '"'``, return the index just past the closing quote."""
-    n = len(text)
-    i += 1
-    while i < n:
-        c = text[i]
-        if c == "\\":
-            i += 2
-            continue
-        if c == '"':
-            return i + 1
-        i += 1
-    return n  # unterminated; treat the rest of the file as string
+    """
+    Given ``text[i] == '"'``, return the index just past the closing quote.
+
+    An unterminated string runs to end of file, which is the ``\\Z`` arm of
+    :data:`_STRING` and matches what a truncated board file should do.
+    """
+    return _STRING.match(text, i).end()
 
 
-def parse_span(text: str, start: int, end: int) -> Node:
-    """Build a tuple tree for ``text[start:end]``, which must be one node."""
-    node, _pos = _parse_node(text, start, end)
+def parse_span(text: str, start: int, end: int, keep: Optional[frozenset] = None) -> Node:
+    """
+    Build a tuple tree for ``text[start:end]``, which must be one node.
+
+    ``keep``, when given, is the set of tags worth descending into; a child node
+    tagged with anything else is stepped over without being built. Omit it and
+    everything is parsed, as before.
+
+    This is the difference between *reading* a board and *parsing* one. A
+    footprint's useful fields are a handful of small nodes -- reference, value,
+    position, layer, pads and their nets -- while nearly all of its bytes are 3D
+    model references, courtyards, silkscreen polygons and font settings.
+    Building those allocated tens of thousands of tuples per board, once per
+    refresh, and discarded every one. Skipping them measured 1.7x on a
+    realistic KiCad 10 board.
+    """
+    node, _pos = _parse_node(text, start, end, keep)
     if node is None:
         raise SexprError(f"no node at offset {start}")
     return node
@@ -154,7 +181,12 @@ def parse(text: str) -> Node:
     return parse_span(text, i, len(text))
 
 
-def _parse_node(text: str, i: int, end: int) -> tuple[Optional[Node], int]:
+def _parse_node(text: str, i: int, end: int, keep: Optional[frozenset] = None) -> tuple[Optional[Node], int]:
+    # Hand-rolled character loops, deliberately. Replacing these with compiled
+    # regexes was measurably *slower* (0.8-0.87x): the tokens here are a few
+    # characters long, so allocating a match object per token costs more than
+    # scanning it. The regex machinery pays off in iter_spans and scan_health,
+    # which skip over long runs; it does not pay off here.
     while i < end and text[i] in " \t\r\n":
         i += 1
     if i >= end or text[i] != "(":
@@ -173,7 +205,10 @@ def _parse_node(text: str, i: int, end: int) -> tuple[Optional[Node], int]:
         if c == ")":
             return (tag, children), i + 1
         if c == "(":
-            child, i = _parse_node(text, i, end)
+            if keep is not None and _peek_tag(text, i, end) not in keep:
+                i = _skip_node(text, i, end)
+                continue
+            child, i = _parse_node(text, i, end, keep)
             if child is None:
                 break
             children.append(child)
@@ -185,13 +220,47 @@ def _parse_node(text: str, i: int, end: int) -> tuple[Optional[Node], int]:
     return (tag, children), i
 
 
+def _peek_tag(text: str, i: int, end: int) -> str:
+    """The tag of the node at ``text[i] == '('``, without consuming anything."""
+    j = i + 1
+    while j < end and text[j] in " \t\r\n":
+        j += 1
+    k = j
+    while k < end and text[k] not in ' \t\r\n()"':
+        k += 1
+    return text[j:k]
+
+
+def _skip_node(text: str, i: int, end: int) -> int:
+    """Index just past the node at ``text[i] == '('``, building nothing."""
+    depth = 0
+    search = _PARENS.search
+    while i < end:
+        match = search(text, i, end)
+        if match is None:
+            return end
+        i = match.start()
+        c = text[i]
+        if c == '"':
+            i = min(_skip_string(text, i), end)
+            continue
+        if c == "(":
+            depth += 1
+        else:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return end
+
+
 def _read_atom(text: str, i: int, end: int) -> tuple[str, int]:
     while i < end and text[i] in " \t\r\n":
         i += 1
     if i >= end:
         return "", i
     if text[i] == '"':
-        j = _skip_string(text, i)
+        j = min(_skip_string(text, i), end)
         return unquote(text[i:j]), j
     j = i
     while j < end and text[j] not in ' \t\r\n()"':
@@ -281,6 +350,8 @@ def unquote(s: str) -> str:
     """Inverse of :func:`quote` for a single token."""
     if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
         body = s[1:-1]
+        if "\\" not in body:
+            return body  # the overwhelmingly common case; skip the escape walk
         out = []
         i = 0
         while i < len(body):

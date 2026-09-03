@@ -390,3 +390,44 @@ def test_board_counts_report_placed_and_pending(indexed):
     counts = indexed.board_counts()
     assert counts["Power"]["placed"] == 2
     assert counts["Power"]["pending"] == 1  # C7
+
+
+# =============================================================================
+# The reverse net index
+#
+# `net:` was O(records x nets x nodes) -- 11.5 seconds on a ten-thousand
+# component design, per keystroke. See tests/test_perf.py for the scaling guard;
+# these pin the behaviour.
+# =============================================================================
+
+
+def test_refresh_builds_the_reverse_net_index(project, make_board):
+    from multiboard.core.config import BoardConfig, ProjectConfig
+    from multiboard.core.index import ComponentIndex
+    from multiboard.core.netlist import netlist_path
+
+    rel = make_board("Power", [{"ref": "R1", "value": "10k", "pads": [("1", "GND"), ("2", "VCC")]}])
+    cfg = ProjectConfig()
+    cfg.boards["Power"] = BoardConfig(name="Power", pcb_path=rel)
+
+    netlist = netlist_path(project)
+    netlist.parent.mkdir(parents=True, exist_ok=True)
+    netlist.write_text(make_netlist([{"ref": "R1", "value": "10k"}]), encoding="utf-8")
+
+    index = ComponentIndex(project, cfg)
+    index.refresh(netlist=netlist, force=True)
+
+    assert index.nets_of("R1") == frozenset({"gnd", "vcc"})
+    assert index.nets_of("R99") == frozenset()
+
+
+def test_net_filter_is_case_insensitive(indexed):
+    lower = {h.record.ref for h in indexed.search("net:gnd")}
+    upper = {h.record.ref for h in indexed.search("net:GND")}
+    assert lower and lower == upper
+
+
+def test_lookup_falls_back_to_case_insensitive_match(indexed):
+    any_ref = indexed.records()[0].ref
+    assert indexed.get(any_ref.lower()) is indexed.get(any_ref)
+    assert indexed.get("  " + any_ref.upper() + "  ") is indexed.get(any_ref)

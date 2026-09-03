@@ -18,7 +18,7 @@ import wx.grid as gridlib
 
 from ..core.index import ComponentIndex, ComponentRecord, Status
 from ..core.rules import natural_key
-from .theme import apply_grid, get_theme, set_row_colors
+from .theme import apply_grid, get_theme
 from .widgets import (
     SPACING_MD,
     SPACING_SM,
@@ -42,22 +42,35 @@ COLUMNS = [
     ("Status", 100),
 ]
 
-MENU_JUMP = wx.ID_HIGHEST + 200
-MENU_ASSIGN = wx.ID_HIGHEST + 201
-MENU_ADOPT = wx.ID_HIGHEST + 202
-MENU_CLEAR = wx.ID_HIGHEST + 203
-MENU_COPY_REF = wx.ID_HIGHEST + 204
-MENU_COPY_ROW = wx.ID_HIGHEST + 205
-MENU_NET = wx.ID_HIGHEST + 206
+XREF_ROW_LIMIT = 5000
+"""
+Most rows the cross-reference will render at once.
+
+Not a display limit so much as a work limit: sorting and laying out is bounded,
+so no project size can make this view sluggish. Well past what anyone scrolls --
+the search box and the filter chips are how you find a component, not the
+scrollbar -- and the count line says when rows are being held back.
+"""
 
 
 class XrefTable(gridlib.GridTableBase):
-    """Virtual table over a list of records."""
+    """
+    Virtual table over a list of records.
 
-    def __init__(self):
+    Row colours come from :meth:`GetAttr`, which the grid calls only for cells it
+    is about to draw. They used to be pushed in with ``SetCellBackgroundColour``
+    and ``SetCellTextColour`` for every row of the result set -- twenty-two calls
+    per row, so a ten-thousand-component filter cost a quarter of a million wx
+    calls on every keystroke, into a grid that is virtual precisely so that it
+    would not have to store per-cell state.
+    """
+
+    def __init__(self, board_color=None):
         super().__init__()
         self.records: list[ComponentRecord] = []
         self.theme = get_theme()
+        self.board_color = board_color or (lambda _n: self.theme.accent)
+        self._attrs: dict[tuple, gridlib.GridCellAttr] = {}
 
     def GetNumberRows(self):
         return len(self.records)
@@ -93,6 +106,55 @@ class XrefTable(gridlib.GridTableBase):
     def SetValue(self, row, col, value):
         return  # read-only
 
+    # -- colour ------------------------------------------------------------
+
+    def row_colors(self, rec: ComponentRecord) -> tuple:
+        """
+        ``(background, foreground)`` for a record.
+
+        Board colour is how placement becomes readable without reading: you learn
+        "Power is teal" once and then recognise it everywhere. Severity wins over
+        identity, because a conflict needs to be noticed first.
+        """
+        theme = self.theme
+        if rec.is_conflict:
+            bg = theme.tint(theme.status_color(rec.status), 0.18)
+            return bg, theme.readable(theme.text, bg)
+        if rec.boards:
+            bg = theme.tint(self.board_color(rec.boards[0]), 0.10)
+            return bg, theme.readable(theme.text, bg)
+        return theme.window_bg, theme.text_muted
+
+    def GetAttr(self, row, col, _kind):
+        """
+        The attribute for one cell.
+
+        wx takes a reference to what this returns, so the caller must hand back
+        an *owned* reference -- hence ``IncRef``. Attributes are interned by
+        colour pair: the palette is the theme's fixed status colours and the ten
+        board hues, so the cache is small and constant regardless of design size.
+        """
+        if row >= len(self.records):
+            return None
+        rec = self.records[row]
+        bg, fg = self.row_colors(rec)
+        if col == len(COLUMNS) - 1:
+            fg = self.theme.readable(self.theme.status_color(rec.status), bg)
+
+        key = (tuple(bg.Get()), tuple(fg.Get()))
+        attr = self._attrs.get(key)
+        if attr is None:
+            attr = gridlib.GridCellAttr()
+            attr.SetBackgroundColour(bg)
+            attr.SetTextColour(fg)
+            self._attrs[key] = attr
+        attr.IncRef()
+        return attr
+
+    def retheme(self, theme) -> None:
+        self.theme = theme
+        self._attrs = {}
+
 
 class XrefPanel(wx.Panel):
     """Filter chips, a search box, and the table."""
@@ -117,6 +179,7 @@ class XrefPanel(wx.Panel):
         self.board_names = board_names
         self.board_color = board_color
         self._visible: list[ComponentRecord] = []
+        self._truncated = False
         self._sort_col = 0
         self._sort_desc = False
 
@@ -151,7 +214,7 @@ class XrefPanel(wx.Panel):
         self.chips = FilterChips(self, self.refresh_view)
         sizer.Add(self.chips, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM | wx.EXPAND, SPACING_SM)
 
-        self.table = XrefTable()
+        self.table = XrefTable(self.board_color)
         self.grid = gridlib.Grid(self)
         self.grid.SetTable(self.table, True)
         self.grid.EnableEditing(False)
@@ -204,6 +267,13 @@ class XrefPanel(wx.Panel):
         self.chips.set_chips(chips)
 
     def _filtered(self) -> list[ComponentRecord]:
+        """
+        The records to show, capped at :data:`XREF_ROW_LIMIT`.
+
+        The cap is the point. Rendering is bounded work regardless of design
+        size, so the view cannot be made slow by a project that is merely large,
+        and the count line says plainly when rows are being held back.
+        """
         selected = [k for k in self.chips.selected() if k != "all"]
         query_parts = list(selected)
         text = self.search.GetValue().strip()
@@ -211,8 +281,12 @@ class XrefPanel(wx.Panel):
             query_parts.append(text)
 
         if not query_parts:
-            return self.index.records()
-        return [h.record for h in self.index.search(" ".join(query_parts), limit=1_000_000)]
+            records = self.index.records()
+        else:
+            records = [h.record for h in self.index.search(" ".join(query_parts), limit=XREF_ROW_LIMIT + 1)]
+
+        self._truncated = len(records) > XREF_ROW_LIMIT
+        return list(records[:XREF_ROW_LIMIT])
 
     def _sorted(self, records: list[ComponentRecord]) -> list[ComponentRecord]:
         col = self._sort_col
@@ -258,40 +332,20 @@ class XrefPanel(wx.Panel):
             grid.ProcessTableMessage(
                 gridlib.GridTableMessage(self.table, gridlib.GRIDTABLE_REQUEST_VIEW_GET_VALUES)
             )
-
-            for row, rec in enumerate(self._visible):
-                self._paint_row(row, rec)
         finally:
             grid.EndBatch()
         grid.ForceRefresh()
 
         total = len(self.index.records())
         shown = len(self._visible)
-        self.count.SetLabel(f"{shown} of {total} component(s)" if shown != total else f"{total} component(s)")
-
-    def _paint_row(self, row: int, rec: ComponentRecord) -> None:
-        """
-        Colour a row by board identity, or by severity when it needs attention.
-
-        Board colour is how placement becomes readable without reading: you learn
-        "Power is teal" once and then recognise it everywhere.
-        """
-        theme = self.theme
-        if rec.is_conflict:
-            accent = theme.status_color(rec.status)
-            bg = theme.tint(accent, 0.18)
-            fg = theme.readable(theme.text, bg)
-        elif rec.boards:
-            accent = self.board_color(rec.boards[0])
-            bg = theme.tint(accent, 0.10)
-            fg = theme.readable(theme.text, bg)
+        if self._truncated:
+            self.count.SetLabel(
+                f"showing the first {shown} of {total} component(s) - narrow the search to see more"
+            )
         else:
-            bg, fg = theme.window_bg, theme.text_muted
-
-        set_row_colors(self.grid, row, len(COLUMNS), bg, fg)
-
-        status_col = len(COLUMNS) - 1
-        self.grid.SetCellTextColour(row, status_col, theme.readable(theme.status_color(rec.status), bg))
+            self.count.SetLabel(
+                f"{shown} of {total} component(s)" if shown != total else f"{total} component(s)"
+            )
 
     def _update_banner(self) -> None:
         conflicts = self.index.stats.conflicts
@@ -303,11 +357,8 @@ class XrefPanel(wx.Panel):
         self.Layout()
 
     def _only_conflicts(self) -> None:
-        self.chips.clear()
         self.search.SetValue("")
-        for key, button, _ in self.chips._buttons:
-            if key.startswith("status:") and key.split(":", 1)[1] in Status.CONFLICTS:
-                button.SetValue(True)
+        self.chips.select(f"status:{s}" for s in Status.CONFLICTS)
         self.refresh_view()
 
     # -- interaction -------------------------------------------------------
@@ -345,45 +396,47 @@ class XrefPanel(wx.Panel):
         if not records:
             return
 
+        # Handlers are bound to the menu, not to this panel. Binding them here
+        # meant every right-click added another set that was never removed, each
+        # holding its captured record list alive -- unbounded growth over a
+        # session, and stale closures shadowed only by luck of ordering. The
+        # menu owns them now, so they die with it two lines below.
         menu = wx.Menu()
         one = records[0] if len(records) == 1 else None
+        refs = [r.ref for r in records]
+
+        def on(item, handler):
+            menu.Bind(wx.EVT_MENU, lambda _e: handler(), id=item.GetId())
 
         if one is not None:
-            menu.Append(MENU_JUMP, "Go to component\tEnter")
-            menu.Enable(MENU_JUMP, bool(one.placements))
+            item = menu.Append(wx.ID_ANY, "Go to component\tEnter")
+            item.Enable(bool(one.placements))
+            on(item, lambda: self.on_jump(one))
             menu.AppendSeparator()
 
         assign_menu = wx.Menu()
-        self._assign_ids = {}
-        for i, name in enumerate(self.board_names()):
-            item_id = wx.ID_HIGHEST + 300 + i
-            assign_menu.Append(item_id, name)
-            self._assign_ids[item_id] = name
-            self.Bind(wx.EVT_MENU, lambda e, n=name: self.on_assign([r.ref for r in records], n), id=item_id)
+        for name in self.board_names():
+            # wx.ID_ANY, not a hand-rolled id range: the old one started at
+            # ID_HIGHEST + 300 and ran into the main window's own ids at 100 boards.
+            item = assign_menu.Append(wx.ID_ANY, name)
+            menu.Bind(wx.EVT_MENU, lambda _e, n=name: self.on_assign(refs, n), id=item.GetId())
         label = "Assign to board" if len(records) == 1 else f"Assign {len(records)} to board"
         menu.AppendSubMenu(assign_menu, label)
 
-        adoptable = [r for r in records if len(r.placements) == 1]
-        menu.Append(MENU_ADOPT, f"Adopt placement as intent ({len(adoptable)})")
-        menu.Enable(MENU_ADOPT, bool(adoptable))
+        adoptable = [r.ref for r in records if len(r.placements) == 1]
+        item = menu.Append(wx.ID_ANY, f"Adopt placement as intent ({len(adoptable)})")
+        item.Enable(bool(adoptable))
+        on(item, lambda: self.on_adopt(adoptable))
 
-        pinned = [r for r in records if r.intent is not None]
-        menu.Append(MENU_CLEAR, "Clear assignment")
-        menu.Enable(MENU_CLEAR, bool(pinned))
+        item = menu.Append(wx.ID_ANY, "Clear assignment")
+        item.Enable(any(r.intent is not None for r in records))
+        on(item, lambda: self.on_assign(refs, None))
 
         menu.AppendSeparator()
-        menu.Append(MENU_COPY_REF, "Copy reference(s)")
-        menu.Append(MENU_COPY_ROW, "Copy row(s) as text")
+        on(menu.Append(wx.ID_ANY, "Copy reference(s)"), lambda: _copy("\n".join(refs)))
+        on(menu.Append(wx.ID_ANY, "Copy row(s) as text"), lambda: self._copy_rows(records))
         if one is not None:
-            menu.Append(MENU_NET, "Show nets...")
-
-        self.Bind(wx.EVT_MENU, lambda e: self.on_jump(one), id=MENU_JUMP)
-        self.Bind(wx.EVT_MENU, lambda e: self.on_adopt([r.ref for r in adoptable]), id=MENU_ADOPT)
-        self.Bind(wx.EVT_MENU, lambda e: self.on_assign([r.ref for r in records], None), id=MENU_CLEAR)
-        self.Bind(wx.EVT_MENU, lambda e: _copy("\n".join(r.ref for r in records)), id=MENU_COPY_REF)
-        self.Bind(wx.EVT_MENU, lambda e: self._copy_rows(records), id=MENU_COPY_ROW)
-        if one is not None:
-            self.Bind(wx.EVT_MENU, lambda e: self._show_nets(one), id=MENU_NET)
+            on(menu.Append(wx.ID_ANY, "Show nets..."), lambda: self._show_nets(one))
 
         self.PopupMenu(menu)
         menu.Destroy()
@@ -430,7 +483,7 @@ class XrefPanel(wx.Panel):
 
     def retheme(self) -> None:
         self.theme = get_theme()
-        self.table.theme = self.theme
+        self.table.retheme(self.theme)
         apply_grid(self.grid, self.theme)
         self.banner.retheme()
         self.chips.retheme()

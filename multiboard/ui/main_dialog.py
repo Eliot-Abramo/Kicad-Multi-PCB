@@ -58,16 +58,6 @@ BOARD_COLUMNS = [
     ("Path", 260),
 ]
 
-ID_OPEN = wx.ID_HIGHEST + 400
-ID_UPDATE = wx.ID_HIGHEST + 401
-ID_PORTS = wx.ID_HIGHEST + 402
-ID_RENAME = wx.ID_HIGHEST + 403
-ID_DESC = wx.ID_HIGHEST + 404
-ID_DELETE = wx.ID_HIGHEST + 405
-ID_COPY = wx.ID_HIGHEST + 406
-ID_REVEAL = wx.ID_HIGHEST + 407
-ID_FAB = wx.ID_HIGHEST + 408
-
 
 class MainDialog(BaseDialog):
     """Boards, components, and everything reachable from them."""
@@ -317,6 +307,13 @@ class MainDialog(BaseDialog):
 
         self._refresh_boards()
         self.xref.refresh_view()
+
+        if result.cancelled:
+            # Cancelling is a normal outcome now that long steps are interruptible;
+            # say so plainly rather than reporting stale counts as if they were fresh.
+            self.status.set_status("Refresh cancelled - showing the previous index", "warning")
+            return
+
         self._update_banner(result)
 
         stats = result.stats
@@ -466,17 +463,32 @@ class MainDialog(BaseDialog):
             self.dismiss()
         elif key == wx.WXK_DELETE and self.notebook.GetSelection() == 0:
             # Delete only, never Backspace, and only from the boards grid.
-            if self.grid.HasFocus():
+            if self._grid_has_focus():
                 self._on_delete()
             else:
                 event.Skip()
         elif key in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER):
-            if self.notebook.GetSelection() == 0 and self.grid.HasFocus():
+            if self.notebook.GetSelection() == 0 and self._grid_has_focus():
                 self._on_open()
             else:
                 event.Skip()
         else:
             event.Skip()
+
+    def _grid_has_focus(self) -> bool:
+        """
+        Whether keyboard focus is in the boards grid.
+
+        ``Grid.HasFocus()`` is not the question to ask: a wx.grid.Grid is a
+        composite, and on GTK focus lives on its child GridWindow, so the plain
+        check was always False there and Delete and Enter silently did nothing.
+        """
+        window = wx.Window.FindFocus()
+        while window is not None:
+            if window is self.grid:
+                return True
+            window = window.GetParent()
+        return False
 
     # -- actions -----------------------------------------------------------
 
@@ -513,7 +525,7 @@ class MainDialog(BaseDialog):
         target = record.placements[0].board
         current = self._current_board()
 
-        if target == current and self.manager.backend.focus_reference(record.ref):
+        if target == current and self._reveal(record.ref):
             self.status.set_status(f"Selected {record.ref} on {target}", "ok")
             return
 
@@ -539,8 +551,24 @@ class MainDialog(BaseDialog):
         focus_mod.request(self.ws.root, target, record.ref)
         self._open_board(target)
 
+    def _reveal(self, ref: str) -> bool:
+        """
+        Point KiCad's canvas at ``ref``. Returns whether it is on the open board.
+
+        The lookup is synchronous -- the caller needs the answer now -- but the
+        canvas work is deferred. ``FocusOnItem`` runs a KiCad ``TOOL_MANAGER``
+        action, and running one from inside a dialog's event handler, while a
+        modal loop owns the event queue, is how a plugin takes the editor down.
+        ``CallAfter`` puts it on the queue instead, so the current handler has
+        fully returned before KiCad's canvas is touched.
+        """
+        if not self.manager.backend.has_reference(ref):
+            return False
+        wx.CallAfter(self.manager.backend.focus_reference, ref)
+        return True
+
     def _reveal_here(self, ref: str) -> None:
-        if self.manager.backend.focus_reference(ref):
+        if self._reveal(ref):
             self.status.set_status(f"Revealed {ref} on this board", "ok")
 
     def _assign(self, refs: list[str], board: Optional[str]) -> None:
@@ -600,7 +628,19 @@ class MainDialog(BaseDialog):
             self._open_board(name)
 
     def _open_board(self, name: str) -> None:
+        """
+        Launch KiCad on another board.
+
+        The child gets ``child_env()``, not our own environment. KiCad's embedded
+        Python exports PYTHONHOME and PYTHONPATH, and a KiCad started with those
+        inherited tries to initialise against the wrong interpreter and dies with
+        an opaque error -- the same trap ``core.kicad_env`` already documents for
+        kicad-cli. It is also detached, so it survives this editor closing.
+        """
+        import platform
         import subprocess
+
+        from ..core.kicad_env import child_env
 
         pcb = self.ws.board_pcb(name)
         if pcb is None or not pcb.exists():
@@ -610,26 +650,30 @@ class MainDialog(BaseDialog):
         project = pcb.with_suffix(".kicad_pro")
         target = project if project.exists() else pcb
 
-        try:
-            import os
-            import platform
+        system = platform.system()
+        if system == "Windows":
+            commands = [["cmd", "/c", "start", "", str(target)]]
+        elif system == "Darwin":
+            commands = [["open", str(target)]]
+        else:
+            commands = [["kicad", str(target)], ["pcbnew", str(pcb)], ["xdg-open", str(target)]]
 
-            if platform.system() == "Windows":
-                os.startfile(str(target))
-            elif platform.system() == "Darwin":
-                subprocess.Popen(["open", str(target)])
-            else:
-                try:
-                    subprocess.Popen(["kicad", str(target)])
-                except FileNotFoundError:
-                    subprocess.Popen(["pcbnew", str(pcb)])
-        except Exception as exc:
-            message(
-                self, f"Could not open '{name}'.\n\n{exc}\n\nThe file is at:\n{target}", "Open", wx.ICON_ERROR
-            )
-            return
+        detach = {"start_new_session": True} if system != "Windows" else {}
+        failures = []
+        for argv in commands:
+            try:
+                subprocess.Popen(argv, env=child_env(), **detach)
+                self.status.set_status(f"Opening '{name}' in KiCad...", "working")
+                return
+            except (OSError, ValueError) as exc:
+                failures.append(f"{argv[0]}: {exc}")
 
-        self.status.set_status(f"Opening '{name}' in KiCad...", "working")
+        message(
+            self,
+            f"Could not open '{name}'.\n\n" + "\n".join(failures) + f"\n\nThe file is at:\n{target}",
+            "Open",
+            wx.ICON_ERROR,
+        )
 
     def _on_update(self) -> None:
         """Plan, review, then apply. Nothing is written before the review."""
@@ -760,29 +804,27 @@ class MainDialog(BaseDialog):
         if not name:
             return
 
+        # Bound to the menu, so the handlers are released with it. Binding them
+        # on the dialog left one set behind per right-click, for the life of the
+        # window, each capturing the board name it was built for.
         locked = name in self.ws.open_boards()
         menu = wx.Menu()
-        menu.Append(ID_OPEN, "Open in KiCad")
-        menu.Append(ID_UPDATE, "Update...")
-        menu.Enable(ID_UPDATE, not locked)
-        menu.Append(ID_PORTS, "Ports...")
-        menu.AppendSeparator()
-        menu.Append(ID_RENAME, "Rename...")
-        menu.Append(ID_DESC, "Edit description...")
-        menu.Append(ID_FAB, "Build fabrication output")
-        menu.AppendSeparator()
-        menu.Append(ID_COPY, "Copy path")
-        menu.Append(ID_DELETE, "Delete")
-        menu.Enable(ID_DELETE, not locked)
 
-        self.Bind(wx.EVT_MENU, lambda e: self._on_open(), id=ID_OPEN)
-        self.Bind(wx.EVT_MENU, lambda e: self._on_update(), id=ID_UPDATE)
-        self.Bind(wx.EVT_MENU, lambda e: self._on_ports(), id=ID_PORTS)
-        self.Bind(wx.EVT_MENU, lambda e: self._on_rename(name), id=ID_RENAME)
-        self.Bind(wx.EVT_MENU, lambda e: self._on_description(name), id=ID_DESC)
-        self.Bind(wx.EVT_MENU, lambda e: self._on_fab(name), id=ID_FAB)
-        self.Bind(wx.EVT_MENU, lambda e: self._copy_path(name), id=ID_COPY)
-        self.Bind(wx.EVT_MENU, lambda e: self._on_delete(), id=ID_DELETE)
+        def on(label: str, handler, enabled: bool = True) -> None:
+            item = menu.Append(wx.ID_ANY, label)
+            item.Enable(enabled)
+            menu.Bind(wx.EVT_MENU, lambda _e: handler(), id=item.GetId())
+
+        on("Open in KiCad", self._on_open)
+        on("Update...", self._on_update, not locked)
+        on("Ports...", self._on_ports)
+        menu.AppendSeparator()
+        on("Rename...", lambda: self._on_rename(name))
+        on("Edit description...", lambda: self._on_description(name))
+        on("Build fabrication output", lambda: self._on_fab(name))
+        menu.AppendSeparator()
+        on("Copy path", lambda: self._copy_path(name))
+        on("Delete", self._on_delete, not locked)
 
         self.grid.PopupMenu(menu)
         menu.Destroy()
@@ -824,7 +866,12 @@ class MainDialog(BaseDialog):
 
         def work(progress, cancelled):
             progress(20, f"Building fabrication output for {name}...")
-            return run_fab(self.ws.install, self.ws.root, board)
+
+            def pump(elapsed: float) -> bool:
+                progress(20, f"Building fabrication output for {name}... ({elapsed:.0f}s)")
+                return bool(cancelled())
+
+            return run_fab(self.ws.install, self.ws.root, board, pump=pump)
 
         result = run_with_progress(self, f"Fabrication: {name}", work)
         if result.ok:

@@ -21,6 +21,7 @@ from .core.project import (
     board_dir_for,
     find_hierarchical_sheets,
     is_pcb_open,
+    is_valid_board_name,
     link_file,
     safe_relative,
     sanitize_board_name,
@@ -97,6 +98,11 @@ class MultiBoardManager:
         failed creation left a half-built directory behind.
         """
         name = name.strip()
+        # Validated here, not only in the dialog: onboarding creates boards from
+        # schematic sheet names, and the CLI and Doctor repairs reach this too.
+        invalid = is_valid_board_name(name)
+        if invalid:
+            raise ValueError(invalid)
         if name in self.config.boards:
             raise ValueError(f"A board named '{name}' already exists.")
 
@@ -133,7 +139,7 @@ class MultiBoardManager:
 
             self.config.boards[name] = board
             self.ws.save_config()
-            self.ws._lib_paths = None
+            self.ws.invalidate_lib_paths()
             return BoardCreation(name=name, pcb_path=board.pcb_path, warnings=warnings)
 
         except BaseException:
@@ -141,6 +147,11 @@ class MultiBoardManager:
                 import shutil
 
                 shutil.rmtree(board_dir, ignore_errors=True)
+            # The block footprint lives in a shared project library, outside the
+            # board directory, so removing the directory does not remove it. A
+            # failure after regenerate_block would otherwise leave a Block_<name>
+            # behind for a board that does not exist.
+            self._drop_block_footprint(name)
             raise
 
     def _setup_board_project(self, board: BoardConfig, board_dir: Path, dir_name: str) -> None:
@@ -200,7 +211,12 @@ class MultiBoardManager:
 
     def import_board(self, name: str, pcb_path: Path) -> BoardConfig:
         """Adopt a board directory that exists on disk but is not in the config."""
-        rel = pcb_path.resolve().relative_to(self.root.resolve()).as_posix()
+        try:
+            rel = pcb_path.resolve().relative_to(self.root.resolve()).as_posix()
+        except (ValueError, OSError) as exc:
+            raise ValueError(
+                f"{pcb_path} is not inside this project ({self.root}), so it cannot be imported."
+            ) from exc
         if board_dir_for(self.root, rel) is None:
             raise ValueError(f"{rel} is not a board directory.\nBoards must live one level under boards/.")
         board = BoardConfig(name=name, pcb_path=rel)

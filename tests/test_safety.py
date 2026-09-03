@@ -199,6 +199,48 @@ def test_valid_names_are_accepted():
     assert is_valid_board_name("IO Board 2") is None
 
 
+@pytest.mark.parametrize("name", ["CON", "com1", "LPT9", "nul", "aux", "PRN", "com1.backup"])
+def test_windows_device_names_are_rejected(name):
+    """
+    ``boards/COM1/`` cannot be created on Windows, in any directory.
+
+    The kind of defect that only shows up on one platform, after release. Note
+    that the extension does not help: Windows resolves ``COM1.backup`` to the
+    device too.
+    """
+    assert is_valid_board_name(name), f"{name!r} must be refused"
+
+
+@pytest.mark.parametrize("name", ["CON", "com1", "LPT9", "aux"])
+def test_sanitizer_never_emits_a_reserved_directory_name(name):
+    """
+    The last line of defence, for any caller that skips validation.
+
+    ``sanitize_board_name`` is what actually produces the directory, so it has to
+    be safe on its own rather than trusting whoever called it.
+    """
+    from multiboard.core.project import RESERVED_NAMES
+
+    assert sanitize_board_name(name).lower() not in RESERVED_NAMES
+
+
+def test_creating_a_board_validates_the_name(tmp_path):
+    """
+    Validation belongs in create_board, not only in the New Board dialog.
+
+    Onboarding creates one board per schematic sheet without going near that
+    dialog, so a sheet called ``AUX`` reached the filesystem unchecked.
+    """
+    from multiboard.manager import MultiBoardManager
+
+    (tmp_path / ".kicad_multiboard.json").write_text("{}", encoding="utf-8")
+    manager = MultiBoardManager(tmp_path)
+
+    with pytest.raises(ValueError, match="reserved"):
+        manager.create_board("AUX")
+    assert not (tmp_path / "boards").exists(), "nothing may be written for a rejected name"
+
+
 # =============================================================================
 # Project root
 # =============================================================================

@@ -12,13 +12,24 @@ Rules produce *intent* only. Nothing here touches a PCB or a schematic.
 import fnmatch
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Optional
 
 from .config import AssignRule
 from .netlist import SchComponent
 
 _REF_SPLIT = re.compile(r"^([^\d]*)(\d*)$")
-_regex_cache: dict[str, Optional["re.Pattern"]] = {}
+
+REGEX_CACHE_SIZE = 256
+"""
+How many compiled rule patterns to keep.
+
+Bounded deliberately. The rules editor previews matches as you type, so this is
+fed one entry per keystroke -- an unbounded dict grew a compiled pattern for
+every prefix of every regex anyone ever typed, and never released one. 256 is
+far more than the number of rules a project has, so the cache still never misses
+in normal use.
+"""
 
 
 @dataclass(frozen=True)
@@ -74,14 +85,13 @@ def parse_refrange(spec: str) -> list[tuple[str, Optional[int], Optional[int]]]:
     return terms
 
 
+@lru_cache(maxsize=REGEX_CACHE_SIZE)
 def _compile(pattern: str) -> Optional["re.Pattern"]:
     """Compile and cache a regex; an invalid one is quarantined, not fatal."""
-    if pattern not in _regex_cache:
-        try:
-            _regex_cache[pattern] = re.compile(pattern)
-        except re.error:
-            _regex_cache[pattern] = None
-    return _regex_cache[pattern]
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return None
 
 
 def rule_error(rule: AssignRule) -> Optional[str]:

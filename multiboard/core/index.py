@@ -20,7 +20,7 @@ documented "a component belongs to the first board it is placed on" rule false.
 -all rule; a duplicate is a reported conflict showing every board and position.
 """
 
-import threading
+import heapq
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -291,9 +291,19 @@ class ComponentIndex:
     """
     Cross-board component index.
 
-    Everything here is pure Python -- no pcbnew, no wx -- so ``refresh`` runs on
-    a worker thread and the whole class is usable from the CLI where pcbnew does
-    not exist.
+    Everything here is pure Python -- no pcbnew, no wx -- so the whole class is
+    usable from the CLI, where pcbnew does not exist.
+
+    **Single-threaded by contract.** Every caller runs on one thread: KiCad's GUI
+    thread in the plugin, the main thread in the CLI. Nothing here is guarded,
+    because nothing needs to be, and long operations stay responsive by yielding
+    to the event loop through their ``progress`` callback rather than by moving
+    off-thread. Earlier revisions carried an ``RLock`` that was held
+    inconsistently -- taken by ``records`` and ``net``, not by ``refresh``, which
+    is what actually rewrote the state -- so it read as a guarantee it never
+    provided. If this ever does become concurrent, the state to protect is
+    ``_records`` / ``_sorted`` / ``_by_lower`` / ``_nets`` / ``_nets_by_ref`` as
+    one unit, swapped atomically in :meth:`_install`.
     """
 
     def __init__(self, root: Path, cfg: ProjectConfig):
@@ -303,8 +313,10 @@ class ComponentIndex:
         self._scans: dict[str, PcbScan] = {}
         self._sch: dict[str, SchComponent] = {}
         self._nets: dict[str, list[tuple[str, str, str]]] = {}
+        self._nets_by_ref: dict[str, frozenset] = {}
+        self._by_lower: dict[str, ComponentRecord] = {}
+        self._sorted: Optional[list[ComponentRecord]] = None
         self._stats = IndexStats()
-        self._lock = threading.RLock()
         self._loaded_cache = False
 
     # -- accessors ---------------------------------------------------------
@@ -319,19 +331,23 @@ class ComponentIndex:
         return self._sch
 
     def get(self, ref: str) -> Optional[ComponentRecord]:
-        with self._lock:
-            rec = self._records.get(ref)
-            if rec is not None:
-                return rec
-            lowered = ref.strip().lower()
-            for key, value in self._records.items():
-                if key.lower() == lowered:
-                    return value
-            return None
+        rec = self._records.get(ref)
+        if rec is not None:
+            return rec
+        return self._by_lower.get(ref.strip().lower())
 
     def records(self) -> list[ComponentRecord]:
-        with self._lock:
-            return sorted(self._records.values(), key=lambda r: rules_mod.natural_key(r.ref))
+        """
+        Every record, in natural reference order.
+
+        Memoised. Sorting ten thousand references costs 15 ms, and one keystroke
+        in the cross-reference view used to pay it four times over -- once for the
+        filter chips, once for the query, once for the row count, and once inside
+        :meth:`search`. The list is rebuilt only when the records themselves are.
+        """
+        if self._sorted is None:
+            self._sorted = sorted(self._records.values(), key=lambda r: rules_mod.natural_key(r.ref))
+        return self._sorted
 
     def by_board(self, board: str) -> list[ComponentRecord]:
         return [r for r in self.records() if board in r.boards or r.intent == board]
@@ -356,12 +372,14 @@ class ComponentIndex:
 
     def net(self, name: str) -> list[tuple[str, str, str]]:
         """``[(board, ref, pad), ...]`` carrying a net, across every board."""
-        with self._lock:
-            return list(self._nets.get(name, []))
+        return list(self._nets.get(name, []))
+
+    def nets_of(self, ref: str) -> frozenset:
+        """Every net ``ref`` touches, lowercased. O(1); see :meth:`_build_nets`."""
+        return self._nets_by_ref.get(ref, frozenset())
 
     def net_names(self) -> list[str]:
-        with self._lock:
-            return sorted(self._nets)
+        return sorted(self._nets)
 
     def board_warnings(self) -> list[str]:
         out: list[str] = []
@@ -418,7 +436,8 @@ class ComponentIndex:
         scans: dict[str, PcbScan] = {}
         boards = list(self.cfg.boards.items())
         for i, (name, board) in enumerate(boards):
-            if report(10 + int(60 * i / max(len(boards), 1)), f"Scanning {name}..."):
+            pct = 10 + int(60 * i / max(len(boards), 1))
+            if report(pct, f"Scanning {name}..."):
                 return self._stats
 
             if not board.pcb_path:
@@ -436,7 +455,14 @@ class ComponentIndex:
                 stats.boards_cached += 1
                 continue
 
-            scan = scan_pcb_file(pcb)
+            # A dense board takes seconds to read, so report from inside the
+            # scan rather than only either side of it -- otherwise the progress
+            # bar stalls on the one step that actually takes the time.
+            def tick(done: int, total: int, name=name, pct=pct) -> None:
+                if progress:
+                    progress(pct, f"Scanning {name}... ({done}/{total})")
+
+            scan = scan_pcb_file(pcb, on_progress=tick if progress else None)
             scans[name] = scan
             stats.boards_scanned += 1
             stats.warnings.extend(scan.warnings)
@@ -448,11 +474,8 @@ class ComponentIndex:
             return self._stats
 
         records = self._build_records(sch, scans)
-        nets = self._build_nets(scans)
-
-        with self._lock:
-            self._records = records
-            self._nets = nets
+        self._nets, self._nets_by_ref = self._build_nets(scans)
+        self._install(records)
 
         stats.components = len(records)
         stats.placed = sum(1 for r in records.values() if r.placements)
@@ -476,17 +499,26 @@ class ComponentIndex:
         Editing a rule or pinning a component changes only the intent layer, and
         this makes that instant -- the rules editor can show live counts while
         the user types without any I/O at all.
+
+        The reference set is untouched, so the memoised sort stays valid.
         """
-        with self._lock:
-            for rec in self._records.values():
-                intent, origin, detail = resolve_intent(rec.sch, self.cfg, rec.ref)
-                rec.intent, rec.intent_origin, rec.intent_detail = intent, origin, detail
-                rec.status = classify(rec.sch, intent, rec.placements)
-            self._stats.conflicts = sum(1 for r in self._records.values() if r.is_conflict)
-            self._stats.by_status = {}
-            for rec in self._records.values():
-                self._stats.by_status[rec.status] = self._stats.by_status.get(rec.status, 0) + 1
+        by_status: dict[str, int] = {}
+        conflicts = 0
+        for rec in self._records.values():
+            intent, origin, detail = resolve_intent(rec.sch, self.cfg, rec.ref)
+            rec.intent, rec.intent_origin, rec.intent_detail = intent, origin, detail
+            rec.status = classify(rec.sch, intent, rec.placements)
+            by_status[rec.status] = by_status.get(rec.status, 0) + 1
+            conflicts += rec.is_conflict
+        self._stats.conflicts = conflicts
+        self._stats.by_status = by_status
         return self._stats
+
+    def _install(self, records: dict[str, ComponentRecord]) -> None:
+        """Swap in a new record set and drop everything derived from the old one."""
+        self._records = records
+        self._sorted = None
+        self._by_lower = {ref.lower(): rec for ref, rec in records.items()}
 
     def _build_records(
         self, sch: dict[str, SchComponent], scans: dict[str, PcbScan]
@@ -515,15 +547,27 @@ class ComponentIndex:
         return records
 
     @staticmethod
-    def _build_nets(scans: dict[str, PcbScan]) -> dict[str, list[tuple[str, str, str]]]:
+    def _build_nets(scans: dict[str, PcbScan]) -> tuple[dict, dict]:
+        """
+        ``({net: [(board, ref, pad), ...]}, {ref: frozenset(lowercased nets)})``.
+
+        The second map is the whole point. Answering "is this component on net
+        GND?" by scanning the forward map is O(nets x nodes) *per component*, so
+        a ``net:`` filter over the whole index was O(records x nets x nodes) --
+        measured at 11.5 seconds on a ten-thousand-component design, on the GUI
+        thread, once per keystroke. Inverting it here makes the same filter a
+        dict lookup, and costs one extra pass over data we are already walking.
+        """
         nets: dict[str, list[tuple[str, str, str]]] = {}
+        by_ref: dict[str, set] = {}
         for board_name, scan in scans.items():
             for fp in scan.footprints:
                 if not fp.counts_for_ownership:
                     continue
                 for pad, net in fp.pad_nets:
                     nets.setdefault(net, []).append((board_name, fp.ref, pad))
-        return nets
+                    by_ref.setdefault(fp.ref, set()).add(net.lower())
+        return nets, {ref: frozenset(names) for ref, names in by_ref.items()}
 
     # -- search ------------------------------------------------------------
 
@@ -544,26 +588,32 @@ class ComponentIndex:
         Filters AND across fields and OR within one field.
         """
         terms, free = _parse_query(query)
-        results: list[SearchHit] = []
+        ordered = self.records()
+        scored: list[tuple[int, int, ComponentRecord]] = []
 
-        for rec in self.records():
+        for position, rec in enumerate(ordered):
             if not self._passes(rec, terms):
                 continue
             score = _score(rec, free) if free else 1
             if score > 0:
-                results.append(SearchHit(rec, score))
+                # `position` is the tiebreak, not natural_key(rec.ref): records()
+                # is already in natural order, so the index *is* that ordering,
+                # and this keeps a regex out of the per-keystroke path.
+                scored.append((-score, position, rec))
 
-        results.sort(key=lambda h: (-h.score, rules_mod.natural_key(h.record.ref)))
-        return results[:limit]
+        # Only `limit` rows are ever shown, so select rather than fully sort.
+        best = heapq.nsmallest(limit, scored) if limit < len(scored) else sorted(scored)
+        return [SearchHit(rec, -negated) for negated, _position, rec in best]
 
     def _passes(self, rec: ComponentRecord, terms: dict[str, list[str]]) -> bool:
-        for key, wanted in terms.items():
-            low = [w.lower() for w in wanted]
+        # Values arrive lowercased from _parse_query; lowering them here would
+        # rebuild the same lists once per record per query.
+        for key, low in terms.items():
             if key == "board":
                 have = {b.lower() for b in rec.boards}
                 if rec.intent:
                     have.add(rec.intent.lower())
-                if not have & set(low):
+                if have.isdisjoint(low):
                     return False
             elif key == "sheet":
                 if not any(rec.sheet.lower().startswith(w.rstrip("*")) for w in low):
@@ -576,7 +626,7 @@ class ComponentIndex:
                     return False
             elif key == "side":
                 sides = {p.side for p in rec.placements}
-                if not sides & set(low):
+                if sides.isdisjoint(low):
                     return False
             elif key == "fp":
                 if not any(w in rec.footprint.lower() for w in low):
@@ -585,7 +635,7 @@ class ComponentIndex:
                 if not any(w in rec.value.lower() for w in low):
                     return False
             elif key == "net":
-                if not self._nets_for(rec.ref) & set(low):
+                if self._nets_by_ref.get(rec.ref, frozenset()).isdisjoint(low):
                     return False
             elif key == "dnp":
                 want = low[0] in ("yes", "true", "1")
@@ -593,10 +643,6 @@ class ComponentIndex:
                 if is_dnp != want:
                     return False
         return True
-
-    def _nets_for(self, ref: str) -> set:
-        with self._lock:
-            return {net.lower() for net, nodes in self._nets.items() if any(r == ref for _, r, _ in nodes)}
 
     # -- export ------------------------------------------------------------
 
@@ -757,14 +803,19 @@ _FILTER_KEYS = {"board", "sheet", "net", "fp", "status", "side", "dnp", "origin"
 
 
 def _parse_query(query: str) -> tuple[dict[str, list[str]], str]:
-    """Split ``"board:Power r4"`` into ``({"board": ["Power"]}, "r4")``."""
+    """
+    Split ``"board:Power r4"`` into ``({"board": ["power"]}, "r4")``.
+
+    Filter values are lowercased once here rather than once per candidate record;
+    every comparison in :meth:`ComponentIndex._passes` is case-insensitive.
+    """
     terms: dict[str, list[str]] = {}
     free: list[str] = []
 
     for token in query.split():
         key, sep, value = token.partition(":")
         if sep and key.lower() in _FILTER_KEYS and value:
-            terms.setdefault(key.lower(), []).append(value)
+            terms.setdefault(key.lower(), []).append(value.lower())
         else:
             free.append(token)
 

@@ -549,3 +549,78 @@ def test_export_refuses_before_deleting_when_cli_is_missing(tmp_path):
         export_netlist(None, tmp_path, sch)
 
     assert existing.exists(), "the previous netlist was destroyed"
+
+
+# =============================================================================
+# Bounded state
+#
+# "It grows a little on every keystroke" is how a plugin that feels fine in a
+# demo becomes one that has to be restarted after an afternoon's work.
+# =============================================================================
+
+
+def test_compiled_rule_cache_is_bounded():
+    """
+    The rules editor previews matches as you type.
+
+    So this is fed one pattern per keystroke -- every prefix of every regex
+    anyone ever types. An unbounded dict kept all of them for the life of the
+    process.
+    """
+    from multiboard.core.rules import REGEX_CACHE_SIZE, _compile
+
+    _compile.cache_clear()
+    for i in range(REGEX_CACHE_SIZE * 4):
+        _compile(f"^R{i}$")
+
+    assert _compile.cache_info().currsize <= REGEX_CACHE_SIZE
+
+
+def test_invalid_regex_is_quarantined_not_raised():
+    from multiboard.core.rules import _compile
+
+    assert _compile("(unclosed") is None
+    assert _compile(r"^R\d+$") is not None
+
+
+def test_lock_scan_ignores_deleted_boards(tmp_path):
+    """
+    A lock inside a trashed board is not a lock on anything.
+
+    It was also an unbounded walk: Doctor runs on every index refresh, and
+    rglob descended through every board the project had ever deleted.
+    """
+    from multiboard.core.project import stale_locks
+
+    live = tmp_path / "boards" / "Power"
+    live.mkdir(parents=True)
+    (live / "~Power.kicad_pcb.lck").write_text("", encoding="utf-8")
+
+    dead = tmp_path / "boards" / ".trash" / "Old-20260101-0000"
+    dead.mkdir(parents=True)
+    (dead / "~Old.kicad_pcb.lck").write_text("", encoding="utf-8")
+
+    found = [p.name for p in stale_locks(tmp_path)]
+    assert found == ["~Power.kicad_pcb.lck"]
+
+
+def test_trash_check_survives_an_unreadable_file(tmp_path, monkeypatch):
+    """One bad stat must not take the whole Doctor report down."""
+    from multiboard.core import doctor
+
+    trashed = tmp_path / "boards" / ".trash" / "Old-20260101-0000"
+    trashed.mkdir(parents=True)
+    (trashed / "a.bin").write_bytes(b"x" * 10)
+
+    real_stat = Path.stat
+    monkeypatch.setattr(
+        Path,
+        "stat",
+        lambda self, *a, **k: (
+            (_ for _ in ()).throw(OSError("gone")) if self.name == "a.bin" else real_stat(self, *a, **k)
+        ),
+    )
+
+    check = doctor._check_trash(tmp_path)
+    assert check.level == doctor.INFO
+    assert "1 deleted board" in check.title

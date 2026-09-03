@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -49,7 +52,7 @@ jobs:
           python-version: "3.11"
       - run: pip install ruff
       - run: ruff check multiboard/ tests/ tools/
-      - run: ruff format --check multiboard/ tests/
+      - run: ruff format --check multiboard/ tests/ tools/
 
   package:
     runs-on: ubuntu-latest
@@ -65,21 +68,19 @@ jobs:
       - name: Build the PCM archive
         run: python tools/build_package.py
 
-      # v12's release ZIP shipped an entire .git directory and __pycache__.
-      # Assert from outside the build script that it cannot happen again.
+      # v12's release ZIP shipped an entire .git directory and __pycache__, and
+      # a plugins/<name>/ layout would extract one level too deep for KiCad to
+      # import. Both are asserted by tests/test_package.py, which builds its own
+      # archive, checks the layout, simulates a real PCM extraction plus KiCad's
+      # loader, and proves the build is reproducible.
+      #
+      # This step deliberately calls that suite rather than restating it. The
+      # previous inline copy drifted from the build script and asserted the
+      # exact layout the build script forbids.
       - name: Archive contains nothing it should not
         run: |
-          python - <<'PY'
-          import sys, zipfile, pathlib
-          archive = next(pathlib.Path("dist").glob("*.zip"))
-          names = zipfile.ZipFile(archive).namelist()
-          bad = [n for n in names if any(t in n for t in (".git", "__pycache__", ".pyc", "tests/", "tools/"))]
-          assert not bad, f"archive contains {bad}"
-          assert "metadata.json" in names
-          assert "resources/icon.png" in names
-          assert any(n.startswith("plugins/multiboard/") for n in names)
-          print(f"{archive.name}: {len(names)} files, clean")
-          PY
+          pip install pytest
+          pytest tests/test_package.py -q
 
       - uses: actions/upload-artifact@v4
         with:
