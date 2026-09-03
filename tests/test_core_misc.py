@@ -385,7 +385,7 @@ def test_board_colours_are_readable_in_both_modes():
 
 @pytest.mark.parametrize("text", ["#FF8800", "FF8800", "#F80"])
 def test_hex_parsing(text):
-    assert color.from_hex(text) == (255, 136, 0)
+    assert color.from_hex(text) == (255, 26, 0)
 
 
 def test_malformed_hex_degrades_to_grey():

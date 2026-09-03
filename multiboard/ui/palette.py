@@ -87,8 +87,8 @@ class CommandPalette(wx.Dialog):
             self,
             [
                 ("Ref", 90),
-                ("Value", 130),
-                ("Board", 130),
+                ("Value", 20),
+                ("Board", 20),
                 ("Status", 110),
                 ("Sheet", 150),
                 ("Footprint", 200),

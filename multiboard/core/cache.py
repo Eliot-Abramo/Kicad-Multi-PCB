@@ -3,7 +3,7 @@ Atomic JSON persistence.
 
 v12 wrote its config with a plain ``write_text``: truncate, then write. A crash
 or a full disk mid-write left a zero-length ``.kicad_multiboard.json`` and there
-was no backup, so the project's board list was simply gone. Every write in v13
+was no backup, so the project's board list was simply gone. Every write in v2
 goes through :func:`atomic_write_json`.
 """
 

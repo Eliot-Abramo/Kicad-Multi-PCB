@@ -19,7 +19,7 @@ from ..core.plan import ACTION_LABELS, ACTION_ORDER, REMOVE, REPLACE, SKIP, Upda
 from .theme import apply_grid, set_row_colors
 from .widgets import SPACING_MD, SPACING_SM, BaseDialog, ReadOnlyText
 
-COLUMNS = [("", 34), ("Action", 130), ("Ref", 90), ("Reason", 300), ("From", 170), ("To", 170)]
+COLUMNS = [("", 34), ("Action", 20), ("Ref", 90), ("Reason", 300), ("From", 170), ("To", 170)]
 
 
 class PlanDialog(BaseDialog):

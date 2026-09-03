@@ -8,7 +8,7 @@ metadata.json said "8.0", ``__version__`` said "12.0", and generated files
 claimed "9.0" and "10.0" in different places).
 """
 
-__version__ = "13.0.0"
+__version__ = "2.0.0"
 
 CONFIG_SCHEMA = 3
 """
