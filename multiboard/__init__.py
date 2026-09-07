@@ -82,7 +82,9 @@ def _register() -> None:
                 try:
                     require_supported()
                 except Exception as exc:
-                    wx.MessageBox(str(exc), "Multi-Board Manager", wx.OK | wx.ICON_ERROR)
+                    wx.MessageBox(
+                        str(exc), "Multi-Board Manager", wx.OK | wx.ICON_ERROR
+                    )
                     return
 
                 board = pcbnew.GetBoard()
@@ -97,7 +99,7 @@ def _register() -> None:
                     return
 
                 # The dialog is built by a factory so the (filesystem-touching)
-                # manager is constructed before the wx object exists. v12 built
+                # manager is constructed before the wx object exists. v1 built
                 # it inside __init__ ahead of super().__init__, which left a
                 # half-constructed wx.Dialog behind on any failure.
                 try:

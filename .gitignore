@@ -222,7 +222,7 @@ boards/.trash/
 # Config backups written before every save.
 .kicad_multiboard.json.bak
 
-# Built PCM archives are release assets, not repository content. v12 committed
+# Built PCM archives are release assets, not repository content. v2 committed
 # them, and the committed ZIP contained a full .git directory.
 dist/
 Releases/

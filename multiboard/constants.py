@@ -27,7 +27,7 @@ atomic on the same filesystem, and cannot escape the project tree.
 WORK_DIR = ".multiboard"
 """
 Per-project scratch directory: index cache, netlist exports, DRC reports,
-pending-focus handoff. Gitignored. Never the project root, which is where v12
+pending-focus handoff. Gitignored. Never the project root, which is where v1
 wrote its temp netlist.
 """
 
@@ -87,7 +87,7 @@ PACK_ORIGIN = (50.0, 50.0)
 """Where the packing grid starts, in mm."""
 
 CLI_TIMEOUT = 180.0
-"""Default seconds before a kicad-cli invocation is killed. v12 had no timeout,
+"""Default seconds before a kicad-cli invocation is killed. v1 had no timeout,
 so a hung kicad-cli froze KiCad permanently."""
 
 CLI_POLL_INTERVAL = 0.05

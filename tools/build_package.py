@@ -5,7 +5,7 @@
 """
 Build the Plugin and Content Manager archive.
 
-Built from an explicit **allowlist**, never a directory walk. The v12 release ZIP
+Built from an explicit **allowlist**, never a directory walk. The v1 release ZIP
 was assembled by walking the source tree, and it shipped a complete ``.git``
 directory -- history, remote URL, a 654 KB packfile -- plus ``__pycache__``
 bytecode pinned to CPython 3.11 and two install scripts that had been deleted
@@ -101,7 +101,9 @@ def verify(names: list) -> None:
     """Refuse to write an archive containing anything that must never ship."""
     bad = [n for n in names if any(token in n for token in FORBIDDEN)]
     if bad:
-        raise SystemExit("error: archive would contain excluded files:\n  " + "\n  ".join(bad))
+        raise SystemExit(
+            "error: archive would contain excluded files:\n  " + "\n  ".join(bad)
+        )
 
     if "metadata.json" not in names:
         raise SystemExit("error: metadata.json missing from archive")
@@ -150,7 +152,11 @@ def check_metadata() -> dict:
             f"multiboard/version.py ({__version__!r})"
         )
 
-    leaked = [k for k in ("download_url", "download_sha256", "download_size", "install_size") if k in entry]
+    leaked = [
+        k
+        for k in ("download_url", "download_sha256", "download_size", "install_size")
+        if k in entry
+    ]
     if leaked:
         raise SystemExit(
             "error: metadata.json inside the package must not contain "
@@ -215,7 +221,9 @@ def build(out_dir: Path) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", default="dist", help="output directory (default: dist)")
+    parser.add_argument(
+        "--out", default="dist", help="output directory (default: dist)"
+    )
     args = parser.parse_args()
     build(ROOT / args.out)
     return 0

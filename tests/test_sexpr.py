@@ -17,7 +17,10 @@ def test_iter_spans_finds_top_level_nodes():
 
 def test_nested_footprints_are_not_yielded_at_depth_one():
     text = '(kicad_pcb (group (footprint "nested")) (footprint "top"))'
-    got = [sexpr.atom(sexpr.parse_span(text, s, e)) for s, e in sexpr.iter_spans(text, "footprint")]
+    got = [
+        sexpr.atom(sexpr.parse_span(text, s, e))
+        for s, e in sexpr.iter_spans(text, "footprint")
+    ]
     assert got == ["top"]
 
 
@@ -60,13 +63,13 @@ def test_scan_health_detects_truncation():
 
 
 def test_scan_health_detects_stray_close():
-    """This is exactly the shape v12's block-footprint generator emitted."""
-    v12 = (
+    """This is exactly the shape v1's block-footprint generator emitted."""
+    v1 = (
         '(footprint "B" (fp_rect (start 0 0) (end 1 1)\n'
         '  (stroke (width 0.05) (type solid)) (fill none) (layer "F.CrtYd"))\n'
         "  )\n)"
     )
-    balanced, depth = sexpr.scan_health(v12)
+    balanced, depth = sexpr.scan_health(v1)
     assert not balanced and depth < 0
 
 

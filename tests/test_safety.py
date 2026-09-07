@@ -4,7 +4,7 @@
 """
 The path-safety chokepoints.
 
-Three of v12's defects were data-loss bugs caused by trusting paths that came
+Three of v1's defects were data-loss bugs caused by trusting paths that came
 out of files. Every hostile input that reached one of them is a case here.
 """
 
@@ -31,7 +31,7 @@ from multiboard.core.project import (
 @pytest.mark.parametrize(
     "rel_pcb",
     [
-        "",  # v12: became the project's PARENT
+        "",  # v1: became the project's PARENT
         "   ",
         "demo.kicad_pcb",  # root PCB, not a board
         "boards/loose.kicad_pcb",  # directly in boards/, no dir of its own
@@ -39,7 +39,7 @@ from multiboard.core.project import (
         "../outside/x.kicad_pcb",  # escapes the project
         "/etc/passwd",  # absolute
         "boards/Power/Power.kicad_sch",  # wrong suffix
-        "keyboards/Power/Power.kicad_pcb",  # v12's substring guard accepted this
+        "keyboards/Power/Power.kicad_pcb",  # v1's substring guard accepted this
     ],
 )
 def test_refuses_untrustworthy_board_paths(tmp_path, rel_pcb):
@@ -98,12 +98,18 @@ def test_rejects_escaping_paths(tmp_path, candidate):
 
 
 def test_accepts_ordinary_relative_paths(tmp_path):
-    assert safe_relative(tmp_path, "sub/sheet.kicad_sch") == tmp_path / "sub" / "sheet.kicad_sch"
+    assert (
+        safe_relative(tmp_path, "sub/sheet.kicad_sch")
+        == tmp_path / "sub" / "sheet.kicad_sch"
+    )
     assert safe_relative(tmp_path, "./sheet.kicad_sch") == tmp_path / "sheet.kicad_sch"
 
 
 def test_backslashes_are_treated_as_separators(tmp_path):
-    assert safe_relative(tmp_path, "sub\\sheet.kicad_sch") == tmp_path / "sub" / "sheet.kicad_sch"
+    assert (
+        safe_relative(tmp_path, "sub\\sheet.kicad_sch")
+        == tmp_path / "sub" / "sheet.kicad_sch"
+    )
 
 
 # =============================================================================
@@ -113,7 +119,7 @@ def test_backslashes_are_treated_as_separators(tmp_path):
 
 def test_refuses_to_link_a_file_onto_itself(tmp_path):
     """
-    v12 unlinked the destination first, so when a malformed sheet reference made
+    v1 unlinked the destination first, so when a malformed sheet reference made
     destination == source it deleted the user's schematic.
     """
     src = tmp_path / "root.kicad_sch"
@@ -176,7 +182,7 @@ def test_no_temporary_file_is_left_behind_on_failure(tmp_path, monkeypatch):
 
 
 def test_distinct_names_do_not_collapse_to_the_same_directory():
-    """v12 had two sanitizers; "A B" and "A/B" both became "A_B"."""
+    """v1 had two sanitizers; "A B" and "A/B" both became "A_B"."""
     assert sanitize_board_name("A B") != sanitize_board_name("A/B") or True
     # What actually matters: a separator can never survive into a path.
     assert "/" not in sanitize_board_name("A/B")
@@ -202,7 +208,9 @@ def test_valid_names_are_accepted():
     assert is_valid_board_name("IO Board 2") is None
 
 
-@pytest.mark.parametrize("name", ["CON", "com1", "LPT9", "nul", "aux", "PRN", "com1.backup"])
+@pytest.mark.parametrize(
+    "name", ["CON", "com1", "LPT9", "nul", "aux", "PRN", "com1.backup"]
+)
 def test_windows_device_names_are_rejected(name):
     """
     ``boards/COM1/`` cannot be created on Windows, in any directory.
@@ -241,7 +249,9 @@ def test_creating_a_board_validates_the_name(tmp_path):
 
     with pytest.raises(ValueError, match="reserved"):
         manager.create_board("AUX")
-    assert not (tmp_path / "boards").exists(), "nothing may be written for a rejected name"
+    assert not (
+        tmp_path / "boards"
+    ).exists(), "nothing may be written for a rejected name"
 
 
 # =============================================================================
@@ -257,7 +267,7 @@ def test_config_file_wins(tmp_path):
 
 
 def test_a_board_directory_is_never_the_project_root(tmp_path):
-    """v12's fallback returned boards/Power/ because it contains a .kicad_pro."""
+    """v1's fallback returned boards/Power/ because it contains a .kicad_pro."""
     (tmp_path / "demo.kicad_pro").write_text("{}", encoding="utf-8")
     sub = tmp_path / "boards" / "Power"
     sub.mkdir(parents=True)

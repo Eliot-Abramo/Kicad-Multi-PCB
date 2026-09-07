@@ -4,7 +4,7 @@
 """
 Schematic-side data, via ``kicad-cli sch export netlist --format kicadxml``.
 
-Two v12 defects lived here, and one of them was serious:
+Two v1 defects lived here, and one of them was serious:
 
 * The parser read ``<tstamp>``. KiCad 6 and later emit ``<tstamps>`` (plural)
   inside ``<comp>``. So ``tstamp`` was always empty, ``_set_fp_path`` never
@@ -28,7 +28,7 @@ from ..constants import WORK_DIR
 from .cli_runner import CliResult, run_cli
 
 # Property names whose mere presence (empty value) means True. KiCad writes
-# boolean properties with an empty value. v12 applied this quirk to *any*
+# boolean properties with an empty value. v1 applied this quirk to *any*
 # property whose name contained "exclude" and "board", which would misfire on a
 # user field named e.g. "Excludes board rev".
 BOOLEAN_PROPS = {
@@ -74,7 +74,11 @@ class SchComponent:
         return ""
 
     def to_row(self) -> list:
-        flags = int(self.dnp) | (int(self.exclude_from_board) << 1) | (int(self.exclude_from_bom) << 2)
+        flags = (
+            int(self.dnp)
+            | (int(self.exclude_from_board) << 1)
+            | (int(self.exclude_from_bom) << 2)
+        )
         return [
             self.ref,
             self.value,
@@ -179,7 +183,9 @@ def export_netlist(
     try:
         parse_netlist(out)
     except NetlistError as exc:
-        raise NetlistError(f"Netlist export produced an unreadable file: {exc}") from exc
+        raise NetlistError(
+            f"Netlist export produced an unreadable file: {exc}"
+        ) from exc
 
     return out
 
@@ -233,7 +239,7 @@ def _parse_comp(elem) -> Optional[SchComponent]:
         elif tag == "sheetpath":
             sheetpath = (child.get("names") or "/").strip() or "/"
         elif tag in ("tstamps", "tstamp"):
-            # KiCad 6+ writes <tstamps>; v12 only looked for <tstamp>, so this
+            # KiCad 6+ writes <tstamps>; v1 only looked for <tstamp>, so this
             # was always empty and no footprint was ever linked to its symbol.
             path = (child.text or "").strip()
         elif tag == "property":
@@ -317,7 +323,7 @@ def iter_nets(path: Path) -> Iterator[tuple[str, list[tuple[str, str]]]]:
     """
     etree, _is_lxml = _etree()
     try:
-        # Both libraries accept a str path; v12 passed a Path to lxml's
+        # Both libraries accept a str path; v1 passed a Path to lxml's
         # iterparse and a str to the stdlib's, and the resulting TypeError was
         # not an ImportError so its `except ImportError` never caught it.
         context = etree.iterparse(str(path), events=("end",))
@@ -329,7 +335,11 @@ def iter_nets(path: Path) -> Iterator[tuple[str, list[tuple[str, str]]]]:
             continue
         name = elem.get("name") or ""
         if name:
-            nodes = [(n.get("ref") or "", n.get("pin") or "") for n in elem.iter("node") if n.get("ref")]
+            nodes = [
+                (n.get("ref") or "", n.get("pin") or "")
+                for n in elem.iter("node")
+                if n.get("ref")
+            ]
             yield name, nodes
         elem.clear()
 

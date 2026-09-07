@@ -5,7 +5,7 @@
 DRC and fabrication output across every board.
 
 Multi-board projects need per-board fab output and a way to check every board at
-once. v12 had a DRC pass but discarded kicad-cli's exit code, deleted the report
+once. v1 had a DRC pass but discarded kicad-cli's exit code, deleted the report
 on the success path only, and filtered port nets with a substring test on the
 violation description.
 
@@ -96,13 +96,27 @@ def run_drc(
     # finds something, which is why that code is in ok_codes below. Without the
     # flag the constant was dead: a clean run and a run with a thousand
     # violations both exited 0, and only the JSON told them apart.
-    args = ["pcb", "drc", "--format", "json", "-o", str(out), "--severity-all", "--exit-code-violations"]
+    args = [
+        "pcb",
+        "drc",
+        "--format",
+        "json",
+        "-o",
+        str(out),
+        "--severity-all",
+        "--exit-code-violations",
+    ]
     if parity:
         args.append("--schematic-parity")
     args.append(str(pcb))
 
     cli: CliResult = run_cli(
-        install, args, cwd=root, timeout=timeout, ok_codes=(0, *DRC_VIOLATIONS_EXIT), pump=pump
+        install,
+        args,
+        cwd=root,
+        timeout=timeout,
+        ok_codes=(0, *DRC_VIOLATIONS_EXIT),
+        pump=pump,
     )
     if cli.cancelled:
         result.error = "Cancelled."
@@ -125,7 +139,9 @@ def run_drc(
             description=str(raw.get("description", "")),
             board=board_name,
         )
-        if violation.is_unconnected and _mentions_port(violation.description, port_nets):
+        if violation.is_unconnected and _mentions_port(
+            violation.description, port_nets
+        ):
             result.filtered += 1
             continue
         result.violations.append(violation)
@@ -139,7 +155,7 @@ def _mentions_port(description: str, port_nets: set) -> bool:
     """
     Whether an unconnected-net violation concerns a declared port.
 
-    Matched on word boundaries. A substring test -- which is what v12 used --
+    Matched on word boundaries. A substring test -- which is what v1 used --
     lets a port named ``D`` suppress every violation mentioning any net whose
     name contains the letter d.
     """
@@ -184,7 +200,9 @@ def run_drc_all(
             return bool(cancel and cancel())
 
         ports = [p.effective_net() for p in board.ports.values()]
-        out[name] = run_drc(install, root, name, pcb, ports=ports, parity=parity, pump=pump)
+        out[name] = run_drc(
+            install, root, name, pcb, ports=ports, parity=parity, pump=pump
+        )
 
     if progress:
         progress(100, "Done")
@@ -278,7 +296,15 @@ def run_fab(
     destination = out_dir or (root / WORK_DIR / "fab" / board.name)
     destination.mkdir(parents=True, exist_ok=True)
 
-    args = ["jobset", "run", "--file", str(job), "--output", str(destination), str(project)]
+    args = [
+        "jobset",
+        "run",
+        "--file",
+        str(job),
+        "--output",
+        str(destination),
+        str(project),
+    ]
     return run_cli(install, args, cwd=root, timeout=timeout, pump=pump)
 
 

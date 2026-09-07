@@ -4,7 +4,7 @@
 """
 KiCad installation discovery.
 
-v12 found ``kicad-cli`` with ``shutil.which`` plus a Windows-only directory
+v1 found ``kicad-cli`` with ``shutil.which`` plus a Windows-only directory
 scan. Two consequences:
 
 * macOS users got "kicad-cli not found" out of the box, because the binary lives
@@ -31,7 +31,9 @@ from ..constants import DISCOVERY_CACHE_TTL
 
 Version = tuple[int, ...]
 
-_VERSION_DIR = re.compile(r"^(?:kicad[-_]?)?(\d+)(?:\.(\d+))?(?:\.(\d+))?$", re.IGNORECASE)
+_VERSION_DIR = re.compile(
+    r"^(?:kicad[-_]?)?(\d+)(?:\.(\d+))?(?:\.(\d+))?$", re.IGNORECASE
+)
 _CLI_VERSION = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 
 
@@ -54,7 +56,11 @@ class KicadInstall:
 
     @property
     def major_minor(self) -> str:
-        return f"{self.version[0]}.{self.version[1]}" if len(self.version) >= 2 else str(self.major)
+        return (
+            f"{self.version[0]}.{self.version[1]}"
+            if len(self.version) >= 2
+            else str(self.major)
+        )
 
     def describe(self) -> str:
         v = ".".join(str(p) for p in self.version) if self.version else "unknown"
@@ -185,10 +191,16 @@ def child_env() -> dict[str, str]:
     child kicad-cli inherits them, tries to initialise against the wrong
     interpreter, and dies with an opaque error. This is a recurring failure mode
     for KiCad plugins on Windows and macOS, and it is invisible unless you
-    capture stderr -- which v12 did not.
+    capture stderr -- which v1 did not.
     """
     env = os.environ.copy()
-    for key in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP", "PYTHONNOUSERSITE"):
+    for key in (
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "PYTHONEXECUTABLE",
+        "PYTHONSTARTUP",
+        "PYTHONNOUSERSITE",
+    ):
         env.pop(key, None)
     return env
 
@@ -237,9 +249,24 @@ def _fixed_cli_candidates() -> list[tuple[str, Path, tuple[str, ...]]]:
     if system == "Darwin":
         for base in (Path("/Applications"), Path.home() / "Applications"):
             out.append(
-                ("appbundle", base / "KiCad" / "KiCad.app" / "Contents" / "MacOS" / _exe("kicad-cli"), ())
+                (
+                    "appbundle",
+                    base
+                    / "KiCad"
+                    / "KiCad.app"
+                    / "Contents"
+                    / "MacOS"
+                    / _exe("kicad-cli"),
+                    (),
+                )
             )
-            out.append(("appbundle", base / "KiCad.app" / "Contents" / "MacOS" / _exe("kicad-cli"), ()))
+            out.append(
+                (
+                    "appbundle",
+                    base / "KiCad.app" / "Contents" / "MacOS" / _exe("kicad-cli"),
+                    (),
+                )
+            )
         out.append(("homebrew", Path("/opt/homebrew/bin/kicad-cli"), ()))
         out.append(("homebrew", Path("/usr/local/bin/kicad-cli"), ()))
 
@@ -356,7 +383,7 @@ def env_lib_dirs(version: Version) -> dict[str, Path]:
     """
     KiCad's library path variables, as used inside ``fp-lib-table`` URIs.
 
-    v12 dropped any URI still containing ``${`` after substituting
+    v1 dropped any URI still containing ``${`` after substituting
     ``${KIPRJMOD}``, so every library referenced through
     ``${KICAD10_FOOTPRINT_DIR}`` silently vanished and its footprints "failed to
     load". These variables are frequently absent from the plugin's process
@@ -438,7 +465,10 @@ def discover(*, refresh: bool = False) -> Optional[KicadInstall]:
 
 
 def _build(
-    version: Version, cli: Optional[Path], source: str, spawn_prefix: tuple[str, ...] = ()
+    version: Version,
+    cli: Optional[Path],
+    source: str,
+    spawn_prefix: tuple[str, ...] = (),
 ) -> KicadInstall:
     return KicadInstall(
         version=version,

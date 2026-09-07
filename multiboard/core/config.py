@@ -4,10 +4,12 @@
 """
 Configuration data model (``.kicad_multiboard.json``), schema v3.
 
-New in v3 relative to v12's "12.0":
+The schema number is the file format's own, unrelated to the plugin's release
+number. New in schema v3, relative to what plugin v1 wrote (a bare
+``"version": "12.0"`` and no ``schema`` key at all):
 
 * ``assignments`` and ``rules`` -- the *intent* layer of the ownership model.
-  v12 had no intent at all: ownership was re-derived from PCB contents on every
+  v1 had no intent at all: ownership was re-derived from PCB contents on every
   query, so you could not plan an assignment before placing a part, and a
   component placed on two boards was silently overwritten rather than reported.
 * ``board_field`` -- a schematic symbol field the plugin READS for assignment.
@@ -15,7 +17,7 @@ New in v3 relative to v12's "12.0":
 * ``board_colors`` -- stable per-board colour, so a board is recognisable at a
   glance everywhere in the UI.
 * ``variant`` -- KiCad 10 design variant to export netlists against.
-* ``schema`` is separate from ``plugin_version``. v12 conflated them.
+* ``schema`` is separate from ``plugin_version``. v1 conflated them.
 
 The config is storage, not an interface. Everything in here is created and
 edited from the GUI; a user should never need to open the file.
@@ -50,13 +52,18 @@ class PortDef:
     def effective_net(self) -> str:
         """The net this port carries; falls back to the port name.
 
-        v12's docstring promised this fallback but no code implemented it, so a
+        v1's docstring promised this fallback but no code implemented it, so a
         port with an empty net was dropped from DRC filtering entirely.
         """
         return self.net or self.name
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "net": self.net, "side": self.side, "position": self.position}
+        return {
+            "name": self.name,
+            "net": self.net,
+            "side": self.side,
+            "position": self.position,
+        }
 
     @classmethod
     def from_dict(cls, data: dict, key: str = "") -> "PortDef":
@@ -99,10 +106,17 @@ class AssignRule:
     enabled: bool = True
 
     def label(self) -> str:
-        return {"sheet": "Sheet", "refrange": "Refs", "regex": "Regex"}.get(self.kind, self.kind)
+        return {"sheet": "Sheet", "refrange": "Refs", "regex": "Regex"}.get(
+            self.kind, self.kind
+        )
 
     def to_dict(self) -> dict:
-        return {"kind": self.kind, "pattern": self.pattern, "board": self.board, "enabled": self.enabled}
+        return {
+            "kind": self.kind,
+            "pattern": self.pattern,
+            "board": self.board,
+            "enabled": self.enabled,
+        }
 
     @classmethod
     def from_dict(cls, data: dict) -> "AssignRule":
@@ -138,7 +152,7 @@ class BoardConfig:
 
     @classmethod
     def from_dict(cls, data: dict, key: str = "") -> "BoardConfig":
-        # v12 used data["name"], which raised KeyError on any hand-edited or
+        # v1 used data["name"], which raised KeyError on any hand-edited or
         # partially-written entry and took the whole config down with it.
         cfg = cls(
             name=str(data.get("name") or key),
@@ -149,7 +163,9 @@ class BoardConfig:
         )
         for pname, pdata in (data.get("ports") or {}).items():
             cfg.ports[pname] = (
-                PortDef.from_dict(pdata, pname) if isinstance(pdata, dict) else PortDef(name=pname)
+                PortDef.from_dict(pdata, pname)
+                if isinstance(pdata, dict)
+                else PortDef(name=pname)
             )
         return cfg
 
@@ -185,7 +201,9 @@ class ProjectConfig:
         cfg = self.boards.pop(old)
         cfg.name = new
         self.boards[new] = cfg
-        self.assignments = {r: (new if b == old else b) for r, b in self.assignments.items()}
+        self.assignments = {
+            r: (new if b == old else b) for r, b in self.assignments.items()
+        }
         for rule in self.rules:
             if rule.board == old:
                 rule.board = new
@@ -225,13 +243,23 @@ class ProjectConfig:
             root_pcb=str(data.get("root_pcb", "")),
             variant=str(data.get("variant", "")),
             board_field=str(data.get("board_field") or DEFAULT_BOARD_FIELD),
-            assignments={str(k): str(v) for k, v in (data.get("assignments") or {}).items()},
-            rules=[AssignRule.from_dict(r) for r in (data.get("rules") or []) if isinstance(r, dict)],
-            board_colors={str(k): str(v) for k, v in (data.get("board_colors") or {}).items()},
+            assignments={
+                str(k): str(v) for k, v in (data.get("assignments") or {}).items()
+            },
+            rules=[
+                AssignRule.from_dict(r)
+                for r in (data.get("rules") or [])
+                if isinstance(r, dict)
+            ],
+            board_colors={
+                str(k): str(v) for k, v in (data.get("board_colors") or {}).items()
+            },
         )
         for name, bdata in (data.get("boards") or {}).items():
             cfg.boards[name] = (
-                BoardConfig.from_dict(bdata, name) if isinstance(bdata, dict) else BoardConfig(name, "")
+                BoardConfig.from_dict(bdata, name)
+                if isinstance(bdata, dict)
+                else BoardConfig(name, "")
             )
             # Keep the dict key authoritative so a rename cannot drift.
             cfg.boards[name].name = name
@@ -254,9 +282,10 @@ def migrate(raw: dict) -> dict:
     """
     Bring any older config up to schema v3. Pure and idempotent.
 
-    Existing users' projects keep working: v12 wrote ``"version": "12.0"`` with
-    no ``schema`` key, and its boards carry no assignments or rules. We add the
-    new keys with empty defaults, which reproduces exactly v12's behaviour
+    Existing users' projects keep working: v1 shipped under the old "12.x"
+    numbering and wrote ``"version": "12.0"`` with no ``schema`` key, and its
+    boards carry no assignments or rules. We add the new keys with empty
+    defaults, which reproduces exactly v1's behaviour
     (ownership derived purely from placement) until the user creates a rule.
     """
     if not isinstance(raw, dict):
@@ -265,7 +294,10 @@ def migrate(raw: dict) -> dict:
     data = dict(raw)
 
     if "schema" not in data:
-        # v12 and earlier: a "version" string that conflated schema and plugin.
+        # v1 and earlier: a "version" string that conflated schema and plugin.
+        # "12.0" is the literal v1 actually shipped, back when releases were
+        # numbered to track KiCad. It is real data sitting in users' files, so
+        # it stays the fallback regardless of what we call that release now.
         data["schema"] = 3
         data.setdefault("plugin_version", str(data.pop("version", "12.0")))
 
@@ -279,7 +311,9 @@ def migrate(raw: dict) -> dict:
     if isinstance(boards, dict):
         fixed = {}
         for name, bdata in boards.items():
-            fixed[name] = bdata if isinstance(bdata, dict) else {"name": name, "pcb_path": ""}
+            fixed[name] = (
+                bdata if isinstance(bdata, dict) else {"name": name, "pcb_path": ""}
+            )
         data["boards"] = fixed
     else:
         data["boards"] = {}
@@ -297,7 +331,7 @@ def load(path: Path) -> tuple[ProjectConfig, Optional[str]]:
     """
     Load a config. Returns ``(config, warning)``.
 
-    A corrupt file recovers from the ``.bak`` and reports it, rather than v12's
+    A corrupt file recovers from the ``.bak`` and reports it, rather than v1's
     behaviour of logging quietly and continuing with an empty config -- which
     the user experienced as every board vanishing.
     """

@@ -4,7 +4,7 @@
 """
 Theming derived from the platform, not hardcoded.
 
-v12 defined fourteen literal ``wx.Colour`` constants for a light UI and never
+v1 defined fourteen literal ``wx.Colour`` constants for a light UI and never
 called ``wx.SystemSettings`` at all. Every dialog then forced a white background
 onto native controls without setting a foreground, so on a dark macOS or
 Windows theme the system's light text landed on a hardcoded white background.
@@ -109,7 +109,9 @@ class Theme:
         # A border that reads on both: mostly background, a little text.
         blended = colormath.blend(_rgb(self.text), _rgb(self.window_bg), 0.78)
         self.border = _wx(blended)
-        self.grid_line = _wx(colormath.blend(_rgb(self.text), _rgb(self.window_bg), 0.85))
+        self.grid_line = _wx(
+            colormath.blend(_rgb(self.text), _rgb(self.window_bg), 0.85)
+        )
 
         accents = _ACCENTS_DARK if self.is_dark else _ACCENTS_LIGHT
         bg = _rgb(self.window_bg)
@@ -118,7 +120,9 @@ class Theme:
 
         # A header strip that is always distinct from the content area, in the
         # same direction as the theme rather than always dark.
-        self.header_bg = _wx(colormath.blend(_rgb(self.panel_bg), _rgb(self.text), 0.10))
+        self.header_bg = _wx(
+            colormath.blend(_rgb(self.panel_bg), _rgb(self.text), 0.10)
+        )
         self.header_text = self.text
         self.header_muted = self.text_muted
 
@@ -150,20 +154,28 @@ class Theme:
 
     def board_color(self, rgb: RGB) -> wx.Colour:
         """A per-board identity colour, guaranteed readable in this mode."""
-        return _wx(colormath.ensure_contrast(rgb, _rgb(self.window_bg), colormath.MIN_CONTRAST_AA_LARGE))
+        return _wx(
+            colormath.ensure_contrast(
+                rgb, _rgb(self.window_bg), colormath.MIN_CONTRAST_AA_LARGE
+            )
+        )
 
     # -- fonts -------------------------------------------------------------
 
-    def font(self, scale: float = 1.0, *, bold: bool = False, mono: bool = False) -> wx.Font:
+    def font(
+        self, scale: float = 1.0, *, bold: bool = False, mono: bool = False
+    ) -> wx.Font:
         """
         A font derived from the system UI font.
 
-        v12 used absolute point sizes (15/12/10/9). macOS's default UI font is
+        v1 used absolute point sizes (15/12/10/9). macOS's default UI font is
         13 pt, so its "10 pt body" rendered visibly small there, and on a HiDPI
         GTK desktop with an 11 pt system font its 15 pt header was oversized.
         Scaling relative to the system font is right everywhere.
         """
-        base = wx.SystemSettings.GetFont(wx.SYS_ANSI_FIXED_FONT if mono else wx.SYS_DEFAULT_GUI_FONT)
+        base = wx.SystemSettings.GetFont(
+            wx.SYS_ANSI_FIXED_FONT if mono else wx.SYS_DEFAULT_GUI_FONT
+        )
         f = wx.Font(base)
         f.SetPointSize(max(6, round(base.GetPointSize() * scale)))
         if bold:
@@ -209,7 +221,10 @@ def refresh_theme() -> Theme:
 
 
 def apply_chrome(
-    window: wx.Window, theme: Optional[Theme] = None, *, background: Optional[wx.Colour] = None
+    window: wx.Window,
+    theme: Optional[Theme] = None,
+    *,
+    background: Optional[wx.Colour] = None,
 ) -> None:
     """
     Colour a structural panel: toolbars, headers, footers.
@@ -228,7 +243,7 @@ def apply_input(control: wx.Window, theme: Optional[Theme] = None) -> None:
     """
     The *only* sanctioned way to colour a text-entry or list control.
 
-    It sets both halves. v12 set ``SetBackgroundColour(wx.Colour(250, 250, 250))``
+    It sets both halves. v1 set ``SetBackgroundColour(wx.Colour(250, 250, 250))``
     on read-only text controls and never touched the foreground, which is exactly
     how you get white-on-white in dark mode.
 
@@ -246,7 +261,7 @@ def apply_grid(grid, theme: Optional[Theme] = None) -> None:
 
     ``SetGridLineColour`` and the grid *window*'s background are the two that get
     forgotten, and they are what produce the "dark grid with a bright white
-    gutter below the last row" artefact. v12 set none of these.
+    gutter below the last row" artefact. v1 set none of these.
     """
     t = theme or get_theme()
 

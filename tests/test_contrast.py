@@ -44,7 +44,9 @@ def test_theme_accents_match_this_test():
     pytest.importorskip("wx")
     from multiboard.ui import theme
 
-    assert {k: v for k, v in theme._ACCENTS_LIGHT.items() if k != "info"} == ACCENTS_LIGHT
+    assert {
+        k: v for k, v in theme._ACCENTS_LIGHT.items() if k != "info"
+    } == ACCENTS_LIGHT
     assert {k: v for k, v in theme._ACCENTS_DARK.items() if k != "info"} == ACCENTS_DARK
 
 
@@ -86,10 +88,14 @@ def test_text_remains_legible_on_a_tinted_row(bg):
 @pytest.mark.parametrize("bg", DARK_BACKGROUNDS)
 def test_light_mode_accents_would_fail_on_dark(bg):
     """
-    Documents *why* two palettes exist: v12's single light palette is
+    Documents *why* two palettes exist: v1's single light palette is
     unreadable in dark mode, which is the bug being fixed.
     """
-    failures = [n for n, rgb in ACCENTS_LIGHT.items() if contrast_ratio(rgb, bg) < MIN_CONTRAST_AA]
+    failures = [
+        n
+        for n, rgb in ACCENTS_LIGHT.items()
+        if contrast_ratio(rgb, bg) < MIN_CONTRAST_AA
+    ]
     assert failures, "if this passes, the two-palette design is unnecessary"
 
 

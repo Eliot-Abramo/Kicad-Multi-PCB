@@ -4,7 +4,7 @@
 """
 Update planning -- what an Update would do, computed before anything is written.
 
-v12's Update was a black box: you pressed it and found out afterwards what had
+v1's Update was a black box: you pressed it and found out afterwards what had
 changed, from a summary count. There was no way to see that it was about to add
 400 parts to the wrong board, and no way to stop it half-way.
 
@@ -75,14 +75,20 @@ class UpdatePlan:
         return out
 
     def enabled_items(self, action: Optional[str] = None) -> list[PlanItem]:
-        return [i for i in self.items if i.enabled and (action is None or i.action == action)]
+        return [
+            i
+            for i in self.items
+            if i.enabled and (action is None or i.action == action)
+        ]
 
     def is_noop(self) -> bool:
         return not any(i.action != SKIP for i in self.items)
 
     def summary(self) -> str:
         counts = self.counts()
-        parts = [f"{ACTION_LABELS[a]} {counts[a]}" for a in ACTION_ORDER if counts.get(a)]
+        parts = [
+            f"{ACTION_LABELS[a]} {counts[a]}" for a in ACTION_ORDER if counts.get(a)
+        ]
         return ", ".join(parts) if parts else "Nothing to do"
 
 
@@ -95,7 +101,7 @@ def plan_update(
     """
     Work out what an Update on ``board`` would change.
 
-    ``include_unassigned`` reproduces v12's behaviour of pulling in any component
+    ``include_unassigned`` reproduces v1's behaviour of pulling in any component
     that is not already on another board. With rules configured, turning it off
     makes Update strictly obey intent -- which is what you want once assignment
     is deliberate, and is offered as a checkbox in the dialog.
@@ -104,7 +110,9 @@ def plan_update(
     sch = index.schematic
 
     if not sch:
-        plan.warnings.append("No schematic data. Run a refresh so the netlist can be exported first.")
+        plan.warnings.append(
+            "No schematic data. Run a refresh so the netlist can be exported first."
+        )
 
     on_board: dict[str, ComponentRecord] = {}
     for rec in index.records():
@@ -132,7 +140,9 @@ def plan_update(
             )
         )
 
-    plan.conflicts = [r for r in index.conflicts() if board in r.boards or r.intent == board]
+    plan.conflicts = [
+        r for r in index.conflicts() if board in r.boards or r.intent == board
+    ]
     return plan
 
 
@@ -195,12 +205,21 @@ def _plan_one(
         return
 
     if elsewhere:
-        plan.items.append(PlanItem(ref, SKIP, f"Placed on {', '.join(elsewhere)}", value=comp.value))
+        plan.items.append(
+            PlanItem(ref, SKIP, f"Placed on {', '.join(elsewhere)}", value=comp.value)
+        )
         return
 
     if intent == board:
         plan.items.append(
-            PlanItem(ref, ADD, _why(rec), after=comp.footprint, footprint=comp.footprint, value=comp.value)
+            PlanItem(
+                ref,
+                ADD,
+                _why(rec),
+                after=comp.footprint,
+                footprint=comp.footprint,
+                value=comp.value,
+            )
         )
         return
 
@@ -218,9 +237,13 @@ def _plan_one(
         return
 
     if intent is None:
-        plan.items.append(PlanItem(ref, SKIP, "Not assigned to any board", value=comp.value))
+        plan.items.append(
+            PlanItem(ref, SKIP, "Not assigned to any board", value=comp.value)
+        )
     else:
-        plan.items.append(PlanItem(ref, SKIP, f"Assigned to {intent}", value=comp.value))
+        plan.items.append(
+            PlanItem(ref, SKIP, f"Assigned to {intent}", value=comp.value)
+        )
 
 
 def _why(rec: Optional[ComponentRecord]) -> str:
@@ -255,7 +278,9 @@ def format_plan(plan: UpdatePlan) -> str:
     if plan.conflicts:
         lines.append(f"Conflicts touching this board ({len(plan.conflicts)}):")
         for rec in plan.conflicts[:50]:
-            lines.append(f"  ! {rec.ref}: {Status.LABELS.get(rec.status, rec.status)} - {rec.hint()}")
+            lines.append(
+                f"  ! {rec.ref}: {Status.LABELS.get(rec.status, rec.status)} - {rec.hint()}"
+            )
         lines.append("")
 
     for warning in plan.warnings:

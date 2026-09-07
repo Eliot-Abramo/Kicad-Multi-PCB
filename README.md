@@ -56,7 +56,7 @@ R42  10k
 - [Troubleshooting](#troubleshooting)
 - [Compatibility](#compatibility)
 - [Architecture](#architecture)
-- [Upgrading from version 12](#upgrading-from-version-12)
+- [Upgrading from version 1](#upgrading-from-version-1)
 - [Contributing](#contributing)
 
 ---
@@ -140,7 +140,7 @@ Open the board in KiCad and lay it out.
 
 ## How ownership works
 
-Three layers, kept separate on purpose. Version 12 had only the middle one, which
+Three layers, kept separate on purpose. Version 1 had only the middle one, which
 is why a component placed on two boards silently became whichever board happened
 to be last in a dictionary.
 
@@ -339,7 +339,7 @@ click.
 | "Cannot link schematic" | The project and `boards/` must be on the same filesystem. On Windows, hardlinks need Developer Mode or Administrator. Network drives do not work. |
 | Footprints fail to load during Update | A library is not registered for this project. Doctor checks the project *and* global `fp-lib-table` and reports unresolvable `${...}` variables. |
 | Components do not appear after Update | Check the Components view: they may be assigned elsewhere, DNP, excluded from board, or have no footprint. The Update plan states the reason per component. |
-| Block footprints will not open | If this project was created with version 12, every generated block footprint is malformed. Doctor → *Regenerate blocks*. |
+| Block footprints will not open | If this project was created with version 1, every generated block footprint is malformed. Doctor → *Regenerate blocks*. |
 | Search feels stale | Press F5, or `> reindex` in the palette. The index is cached per board on modification time, so this is normally instant. |
 
 The debug log is at `.multiboard/multiboard.log`.
@@ -351,7 +351,7 @@ The debug log is at `.multiboard/multiboard.log`.
 | KiCad | Status |
 | --- | --- |
 | 10.x | **Supported.** |
-| 9.x and earlier | Not supported. Use [release v12](https://github.com/Eliot-Abramo/Kicad-Multi-PCB/releases). |
+| 9.x and earlier | Not supported. Use [release v1](https://github.com/Eliot-Abramo/Kicad-Multi-PCB/releases). |
 | 11.x | Not yet. KiCad 11 removes the SWIG `pcbnew` bindings this plugin is built on. |
 
 On KiCad 11: the replacement is the IPC API, but as of KiCad 10 it cannot read
@@ -404,16 +404,16 @@ python tools/build_package.py       # reproducible PCM archive
 
 ---
 
-## Upgrading from version 12
+## Upgrading from version 1
 
 Your `.kicad_multiboard.json` is migrated automatically and losslessly on first
 open; a `.bak` is kept. Boards, descriptions, and ports carry over. Assignment
-starts empty, which reproduces version 12's behaviour exactly — ownership derived
+starts empty, which reproduces version 1's behaviour exactly — ownership derived
 purely from placement — until you create a rule.
 
 Two things are worth doing straight away:
 
-1. **Doctor → Regenerate blocks.** Every block footprint version 12 wrote carries
+1. **Doctor → Regenerate blocks.** Every block footprint version 1 wrote carries
    stray closing parentheses and cannot be parsed by KiCad. Nothing reported it
    because nothing ever tried to read them.
 2. **Adopt your placements.** In the Components view, select everything and choose

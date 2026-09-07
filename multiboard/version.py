@@ -3,21 +3,15 @@
 
 """
 Single source of truth for every version string in the project.
-
-Nothing else in this repository may hardcode a version. ``tools/check_version.py``
-validates ``metadata.json`` and the README against these values in CI, which is
-what stops the four-way disagreement that v12 shipped with (README said "9.0+",
-metadata.json said "8.0", ``__version__`` said "12.0", and generated files
-claimed "9.0" and "10.0" in different places).
 """
 
-__version__ = "13.0.0"
+__version__ = "2.0.0"
 
 CONFIG_SCHEMA = 3
 """
 Version of the ``.kicad_multiboard.json`` schema.
 
-Deliberately decoupled from ``__version__``. v12 conflated the two, which meant
+Deliberately decoupled from ``__version__``. v1 conflated the two, which meant
 the config file version bumped on every plugin release whether or not the schema
 had changed, and migration could never be keyed on it.
 """

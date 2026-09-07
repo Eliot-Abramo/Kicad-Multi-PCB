@@ -68,7 +68,7 @@ jobs:
       - name: Build the PCM archive
         run: python tools/build_package.py
 
-      # v12's release ZIP shipped an entire .git directory and __pycache__, and
+      # v1's release ZIP shipped an entire .git directory and __pycache__, and
       # a plugins/<name>/ layout would extract one level too deep for KiCad to
       # import. Both are asserted by tests/test_package.py, which builds its own
       # archive, checks the layout, simulates a real PCM extraction plus KiCad's

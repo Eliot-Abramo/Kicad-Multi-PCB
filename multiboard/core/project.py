@@ -4,7 +4,7 @@
 """
 Project layout, path safety, schematic linking, and lock detection.
 
-Three of v12's defects were data-loss bugs living in this area, and all three
+Three of v1's defects were data-loss bugs living in this area, and all three
 came from paths being trusted:
 
 * ``_on_remove`` derived a board directory from ``pcb_path``; an empty
@@ -70,7 +70,7 @@ def sanitize_board_name(name: str) -> str:
     """
     Turn a board name into a filesystem-safe directory name.
 
-    One implementation, used by both the UI validator and the manager. v12 had
+    One implementation, used by both the UI validator and the manager. v1 had
     two different ones, so ``"A B"`` was accepted by the dialog and became
     directory ``A_B`` -- as did ``"A/B"``, silently colliding.
 
@@ -162,7 +162,7 @@ def board_dir_for(root: Path, rel_pcb: str) -> Optional[Path]:
     """
     The directory to delete for a board, or None if the input is not trustworthy.
 
-    Replaces v12's ``"boards" in str(path)`` substring check. A board directory
+    Replaces v1's ``"boards" in str(path)`` substring check. A board directory
     must be *exactly one level* under ``<root>/boards`` and its PCB must actually
     be a ``.kicad_pcb``. Anything else -- notably an empty ``rel_pcb`` -- returns
     None and the caller refuses to delete.
@@ -222,7 +222,7 @@ def find_project_root(start: Path) -> Path:
     """
     Walk upward from ``start`` to the multi-board project root.
 
-    v12's fallback returned the first directory containing any ``*.kicad_pro``.
+    v1's fallback returned the first directory containing any ``*.kicad_pro``.
     Board directories contain one, so opening a sub-board with no config present
     made ``boards/Power/`` the "project root" and everything nested wrongly.
     We now skip any directory whose parent is named ``boards``.
@@ -251,7 +251,7 @@ def detect_root_files(root: Path) -> list[dict]:
     """
     Candidate root projects, best first.
 
-    v12 took the first ``*.kicad_pro`` in nondeterministic glob order, broke out
+    v1 took the first ``*.kicad_pro`` in nondeterministic glob order, broke out
     of the loop even when it had no matching schematic, and then overwrote the
     persisted ``root_schematic`` on *every* load -- so a correct manual choice
     could not survive. This returns all candidates deterministically and lets
@@ -294,7 +294,7 @@ def link_file(source: Path, dest: Path) -> str:
 
     Ordering is the whole point:
 
-    1. If they are already the same file, do nothing. v12 unlinked and relinked
+    1. If they are already the same file, do nothing. v1 unlinked and relinked
        on every single update.
     2. Refuse outright if they resolve to the same path -- this is the check that
        stops a malformed sheet reference from deleting the user's schematic.
@@ -377,7 +377,9 @@ def can_link(directory: Path) -> tuple:
         probe.unlink(missing_ok=True)
 
 
-def find_hierarchical_sheets(root_sch: Path, _seen: Optional[set[Path]] = None) -> set[str]:
+def find_hierarchical_sheets(
+    root_sch: Path, _seen: Optional[set[Path]] = None
+) -> set[str]:
     """
     Relative paths of every sheet reachable from ``root_sch``.
 
@@ -437,7 +439,7 @@ def is_pcb_open(pcb: Path, active: Optional[Path] = None) -> bool:
 
     ``active`` is the board open in *this* pcbnew instance, if any.
 
-    Unlike v12 this returns **False** when the check itself errors. Returning
+    Unlike v1 this returns **False** when the check itself errors. Returning
     True on error meant an unreadable directory permanently blocked Update and
     Delete with no override; a false negative merely risks the operation being
     refused later by KiCad itself, which is the safer failure direction.

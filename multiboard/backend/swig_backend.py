@@ -4,9 +4,9 @@
 """
 The pcbnew (SWIG) backend for KiCad 10.
 
-Two v12 practices are deliberately abandoned here.
+Two v1 practices are deliberately abandoned here.
 
-**Hand-written s-expressions.** v12 built ``.kicad_pcb`` and ``.kicad_mod`` files
+**Hand-written s-expressions.** v1 built ``.kicad_pcb`` and ``.kicad_mod`` files
 by string concatenation. Its block-footprint generator emitted two stray closing
 parens, so *every* block footprint it ever wrote was unparseable and the feature
 silently never worked; its empty-board template hardcoded KiCad 8's format
@@ -116,7 +116,7 @@ class SwigBackend(Backend):
         """
         Create an empty board using KiCad's own writer.
 
-        The point is to never state a format version ourselves. v12's template
+        The point is to never state a format version ourselves. v1's template
         said ``(version 20240108) (generator_version "9.0")`` and declared nine
         layers; KiCad 10 writes ``20260206``, and the missing ``F.Paste`` /
         ``B.Paste`` layers broke the port pads the same file was meant to carry.
@@ -213,9 +213,15 @@ class SwigBackend(Backend):
         # A block represents a board, not a part: keep it out of the BOM and the
         # pick-and-place output.
         try:
-            fp.SetAttributes(p.FP_BOARD_ONLY | p.FP_EXCLUDE_FROM_POS_FILES | p.FP_EXCLUDE_FROM_BOM)
+            fp.SetAttributes(
+                p.FP_BOARD_ONLY | p.FP_EXCLUDE_FROM_POS_FILES | p.FP_EXCLUDE_FROM_BOM
+            )
         except Exception:
-            for setter in ("SetBoardOnly", "SetExcludedFromPosFiles", "SetExcludedFromBOM"):
+            for setter in (
+                "SetBoardOnly",
+                "SetExcludedFromPosFiles",
+                "SetExcludedFromBOM",
+            ):
                 try:
                     getattr(fp, setter)(True)
                 except Exception:
@@ -236,7 +242,9 @@ class SwigBackend(Backend):
 
         radius = spec.corner_radius()
         self._rounded_outline(fp, hw, hh, radius, p.F_SilkS, 0.32, "solid")
-        self._rounded_outline(fp, hw - 1.8, hh - 1.8, max(0.5, radius - 1.8), p.F_SilkS, 0.14, "dash")
+        self._rounded_outline(
+            fp, hw - 1.8, hh - 1.8, max(0.5, radius - 1.8), p.F_SilkS, 0.14, "dash"
+        )
         self._rounded_outline(fp, hw, hh, radius, p.F_Fab, 0.12, "solid")
 
         # Courtyard, 1 mm proud of the outline.
@@ -249,7 +257,9 @@ class SwigBackend(Backend):
         fp.Add(court)
 
         self._pin1_marker(fp, -hw + 1.2, -hh + 1.2, 2.2)
-        self._text(fp, spec.name, 0, 0, size=2.5, thickness=0.4, layer=p.F_SilkS, bold=True)
+        self._text(
+            fp, spec.name, 0, 0, size=2.5, thickness=0.4, layer=p.F_SilkS, bold=True
+        )
 
         for port in sorted(spec.ports, key=lambda pt: (pt.side, pt.position, pt.name)):
             self._port_pad(fp, spec, port)
@@ -306,7 +316,11 @@ class SwigBackend(Backend):
         p = compat.pcbnew()
         shape = p.PCB_SHAPE(fp)
         shape.SetShape(p.SHAPE_T_POLY)
-        pts = [compat.vec_mm(x, y), compat.vec_mm(x + size, y), compat.vec_mm(x, y + size)]
+        pts = [
+            compat.vec_mm(x, y),
+            compat.vec_mm(x + size, y),
+            compat.vec_mm(x, y + size),
+        ]
         try:
             shape.SetPolyPoints(pts)
         except (AttributeError, TypeError):
@@ -329,7 +343,17 @@ class SwigBackend(Backend):
         fp.Add(shape)
 
     def _text(
-        self, fp, value, x, y, *, size=1.0, thickness=0.15, layer=None, bold=False, rotation=0.0
+        self,
+        fp,
+        value,
+        x,
+        y,
+        *,
+        size=1.0,
+        thickness=0.15,
+        layer=None,
+        bold=False,
+        rotation=0.0,
     ) -> None:
         p = compat.pcbnew()
         text = p.PCB_TEXT(fp)
@@ -383,7 +407,16 @@ class SwigBackend(Backend):
 
         net = port.effective_net()
         if net and net != port.name:
-            self._text(fp, net, lx, ly + 1.4, size=0.9, thickness=0.12, layer=p.F_Fab, rotation=rot)
+            self._text(
+                fp,
+                net,
+                lx,
+                ly + 1.4,
+                size=0.9,
+                thickness=0.12,
+                layer=p.F_Fab,
+                rotation=rot,
+            )
 
     def _smd_layers(self, pad) -> None:
         p = compat.pcbnew()
@@ -501,7 +534,7 @@ class SwigBackend(Backend):
                 continue
             new = self._load_footprint(item.footprint, lib_paths)
             if new is None:
-                # v12 silently kept the old footprint and counted it as updated.
+                # v1 silently kept the old footprint and counted it as updated.
                 result.failed.append(f"{item.ref}: could not load {item.footprint}")
                 continue
             new.SetReference(item.ref)
@@ -519,7 +552,8 @@ class SwigBackend(Backend):
         additions = plan.enabled_items(plan_mod.ADD)
         for i, item in enumerate(additions):
             if i % 10 == 0 and report(
-                30 + int(35 * i / max(len(additions), 1)), f"Adding components ({i + 1}/{len(additions)})..."
+                30 + int(35 * i / max(len(additions), 1)),
+                f"Adding components ({i + 1}/{len(additions)})...",
             ):
                 result.cancelled = True
                 return result
@@ -565,11 +599,13 @@ class SwigBackend(Backend):
         p.SaveBoard(str(pcb_path), board)
         return result
 
-    def _link_paths(self, footprints: dict[str, object], netlist_path: Path, result: ApplyResult) -> None:
+    def _link_paths(
+        self, footprints: dict[str, object], netlist_path: Path, result: ApplyResult
+    ) -> None:
         """
         Write each footprint's KIID path so KiCad knows which symbol it is.
 
-        v12 read the wrong XML element for this, so the path was always empty and
+        v1 read the wrong XML element for this, so the path was always empty and
         no footprint was ever linked. The visible symptom was KiCad's own
         "Update PCB from Schematic" treating every part as new.
         """
@@ -598,12 +634,16 @@ class SwigBackend(Backend):
             )
 
     def _assign_nets(
-        self, board, netlist_path: Path, footprints: dict[str, object], result: ApplyResult
+        self,
+        board,
+        netlist_path: Path,
+        footprints: dict[str, object],
+        result: ApplyResult,
     ) -> None:
         """
         Apply nets from the netlist, clearing stale ones first.
 
-        The clearing pass is what v12 lacked. Because it only ever *set* nets, a
+        The clearing pass is what v1 lacked. Because it only ever *set* nets, a
         connection deleted in the schematic stayed on the pad indefinitely, and
         the board's connectivity slowly diverged from the schematic with nothing
         reporting it.
@@ -671,7 +711,11 @@ class SwigBackend(Backend):
         x0, y0 = PACK_ORIGIN
         for i, fp in enumerate(footprints):
             col, row = i % PACK_MAX_PER_ROW, i // PACK_MAX_PER_ROW
-            fp.SetPosition(compat.vec_mm(x0 + col * PACK_GRID_SPACING, y0 + row * PACK_GRID_SPACING))
+            fp.SetPosition(
+                compat.vec_mm(
+                    x0 + col * PACK_GRID_SPACING, y0 + row * PACK_GRID_SPACING
+                )
+            )
 
     # =====================================================================
     # Footprint loading

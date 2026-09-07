@@ -41,7 +41,7 @@ def test_corrupt_file_recovers_from_backup_and_says_so(tmp_path):
 
 
 def test_corrupt_with_no_backup_raises_rather_than_silently_emptying(tmp_path):
-    """v12 logged and continued with an empty config: every board vanished."""
+    """v1 logged and continued with an empty config: every board vanished."""
     p = tmp_path / "c.json"
     p.write_text("{ broken", encoding="utf-8")
     with pytest.raises(ConfigCorrupt):
@@ -59,8 +59,8 @@ def test_no_temp_files_survive_a_write(tmp_path):
 # =============================================================================
 
 
-def test_v12_config_migrates_without_losing_boards():
-    v12 = {
+def test_v1_config_migrates_without_losing_boards():
+    v1 = {
         "version": "12.0",
         "root_schematic": "demo.kicad_sch",
         "boards": {
@@ -68,17 +68,24 @@ def test_v12_config_migrates_without_losing_boards():
                 "name": "Power",
                 "pcb_path": "boards/Power/Power.kicad_pcb",
                 "description": "Regulators",
-                "ports": {"VIN": {"name": "VIN", "net": "VIN", "side": "left", "position": 0.25}},
+                "ports": {
+                    "VIN": {
+                        "name": "VIN",
+                        "net": "VIN",
+                        "side": "left",
+                        "position": 0.25,
+                    }
+                },
             }
         },
     }
-    cfg = ProjectConfig.from_dict(v12)
+    cfg = ProjectConfig.from_dict(v1)
 
     assert cfg.schema == CONFIG_SCHEMA
     assert cfg.plugin_version == "12.0"  # what wrote it, preserved
     assert cfg.boards["Power"].description == "Regulators"
     assert cfg.boards["Power"].ports["VIN"].position == 0.25
-    assert cfg.assignments == {} and cfg.rules == []  # v12 semantics preserved
+    assert cfg.assignments == {} and cfg.rules == []  # v1 semantics preserved
 
 
 def test_migration_is_idempotent():
@@ -87,19 +94,21 @@ def test_migration_is_idempotent():
 
 
 def test_legacy_string_board_entry_does_not_crash():
-    """v12 produced pcb_path='' here, which is what made rmtree dangerous."""
+    """v1 produced pcb_path='' here, which is what made rmtree dangerous."""
     cfg = ProjectConfig.from_dict({"boards": {"Power": "Power"}})
     assert cfg.boards["Power"].pcb_path == ""
 
 
 def test_board_entry_missing_its_name_key_is_tolerated():
-    """v12 used data["name"] and took the whole config down with a KeyError."""
+    """v1 used data["name"] and took the whole config down with a KeyError."""
     cfg = ProjectConfig.from_dict({"boards": {"Power": {"pcb_path": "x.kicad_pcb"}}})
     assert cfg.boards["Power"].name == "Power"
 
 
 def test_dict_key_is_authoritative_over_a_drifted_name():
-    cfg = ProjectConfig.from_dict({"boards": {"Power": {"name": "Stale", "pcb_path": "p"}}})
+    cfg = ProjectConfig.from_dict(
+        {"boards": {"Power": {"name": "Stale", "pcb_path": "p"}}}
+    )
     assert cfg.boards["Power"].name == "Power"
 
 
@@ -154,7 +163,7 @@ def test_port_defaults_to_its_own_name_as_net():
 
 def test_tstamps_plural_is_read(tmp_path):
     """
-    v12 looked for <tstamp>; KiCad 6+ writes <tstamps>. The consequence was that
+    v1 looked for <tstamp>; KiCad 6+ writes <tstamps>. The consequence was that
     no footprint was ever linked back to its schematic symbol.
     """
     p = tmp_path / "n.xml"
@@ -176,14 +185,19 @@ def test_sheetpath_is_captured_and_normalised(tmp_path):
 
 def test_empty_boolean_property_means_true(tmp_path):
     p = tmp_path / "n.xml"
-    p.write_text(make_netlist([{"ref": "R1", "properties": {"dnp": ""}}]), encoding="utf-8")
+    p.write_text(
+        make_netlist([{"ref": "R1", "properties": {"dnp": ""}}]), encoding="utf-8"
+    )
     assert parse_netlist(p)["R1"].dnp
 
 
 def test_empty_user_field_is_not_treated_as_a_boolean(tmp_path):
-    """v12 matched any property whose name contained 'exclude' and 'board'."""
+    """v1 matched any property whose name contained 'exclude' and 'board'."""
     p = tmp_path / "n.xml"
-    p.write_text(make_netlist([{"ref": "R1", "properties": {"Excludes board rev": ""}}]), encoding="utf-8")
+    p.write_text(
+        make_netlist([{"ref": "R1", "properties": {"Excludes board rev": ""}}]),
+        encoding="utf-8",
+    )
     comp = parse_netlist(p)["R1"]
     assert not comp.exclude_from_board
     assert comp.fields["Excludes board rev"] == ""
@@ -244,7 +258,8 @@ def test_top_level_sheets_are_deduplicated(tmp_path):
 def test_scans_every_board_format_we_claim_to_support(tmp_path, version):
     p = tmp_path / "b.kicad_pcb"
     p.write_text(
-        make_pcb([{"ref": "R1", "value": "10k", "fpid": "R:0402"}], version=version), encoding="utf-8"
+        make_pcb([{"ref": "R1", "value": "10k", "fpid": "R:0402"}], version=version),
+        encoding="utf-8",
     )
     scan = scan_pcb_file(p)
     assert scan.format_version == version
@@ -254,7 +269,9 @@ def test_scans_every_board_format_we_claim_to_support(tmp_path, version):
 def test_legacy_fp_text_reference_is_read(tmp_path):
     p = tmp_path / "b.kicad_pcb"
     p.write_text(
-        make_pcb([{"ref": "R1", "value": "10k", "legacy_text": True}], version=20211014),
+        make_pcb(
+            [{"ref": "R1", "value": "10k", "legacy_text": True}], version=20211014
+        ),
         encoding="utf-8",
     )
     fp = scan_pcb_file(p).footprints[0]
@@ -264,7 +281,10 @@ def test_legacy_fp_text_reference_is_read(tmp_path):
 def test_both_net_serialisations_are_read(tmp_path):
     """Format 20251028 stopped writing netcodes."""
     p = tmp_path / "b.kicad_pcb"
-    p.write_text(make_pcb([{"ref": "R1", "pads": [("1", 7, "GND"), ("2", "VCC")]}]), encoding="utf-8")
+    p.write_text(
+        make_pcb([{"ref": "R1", "pads": [("1", 7, "GND"), ("2", "VCC")]}]),
+        encoding="utf-8",
+    )
     assert dict(scan_pcb_file(p).footprints[0].pad_nets) == {"1": "GND", "2": "VCC"}
 
 
@@ -315,7 +335,17 @@ def test_scan_survives_a_cache_roundtrip(tmp_path):
 
     p = tmp_path / "b.kicad_pcb"
     p.write_text(
-        make_pcb([{"ref": "R1", "value": "10k", "x": 1.5, "pads": [("1", "GND")], "attrs": ["dnp"]}]),
+        make_pcb(
+            [
+                {
+                    "ref": "R1",
+                    "value": "10k",
+                    "x": 1.5,
+                    "pads": [("1", "GND")],
+                    "attrs": ["dnp"],
+                }
+            ]
+        ),
         encoding="utf-8",
     )
     original = scan_pcb_file(p)
@@ -323,9 +353,9 @@ def test_scan_survives_a_cache_roundtrip(tmp_path):
     assert restored.footprints == original.footprints
 
 
-def test_detects_the_v12_block_footprint_damage(tmp_path):
+def test_detects_the_v1_block_footprint_damage(tmp_path):
     """
-    Every Block_*.kicad_mod v12 ever wrote carries two stray closing parens.
+    Every Block_*.kicad_mod v1 ever wrote carries two stray closing parens.
     Doctor uses this to offer a one-click regeneration.
     """
     lib = tmp_path / "MultiBoard_Blocks.pretty"
@@ -337,7 +367,9 @@ def test_detects_the_v12_block_footprint_damage(tmp_path):
         "  )\n)",
         encoding="utf-8",
     )
-    (lib / "Block_IO.kicad_mod").write_text('(footprint "Block_IO" (layer "F.Cu"))', encoding="utf-8")
+    (lib / "Block_IO.kicad_mod").write_text(
+        '(footprint "Block_IO" (layer "F.Cu"))', encoding="utf-8"
+    )
 
     problems = validate_footprint_library(lib)
     assert len(problems) == 1
@@ -350,7 +382,9 @@ def test_detects_the_v12_block_footprint_damage(tmp_path):
 
 
 def test_contrast_ratio_endpoints():
-    assert color.contrast_ratio((0, 0, 0), (255, 255, 255)) == pytest.approx(21.0, abs=0.01)
+    assert color.contrast_ratio((0, 0, 0), (255, 255, 255)) == pytest.approx(
+        21.0, abs=0.01
+    )
     assert color.contrast_ratio((128, 128, 128), (128, 128, 128)) == pytest.approx(1.0)
 
 
@@ -369,12 +403,15 @@ def test_ensure_contrast_lifts_an_unreadable_colour():
 
 def test_board_colours_are_stable_across_processes():
     """Python's hash() is randomised per run; a board must keep its colour."""
-    assert color.board_color("Power", dark_mode=False) == color.board_color("Power", dark_mode=False)
+    assert color.board_color("Power", dark_mode=False) == color.board_color(
+        "Power", dark_mode=False
+    )
 
 
 def test_board_colours_differ_between_boards():
     seen = {
-        color.board_color(n, dark_mode=False, index=i) for i, n in enumerate(["Power", "IO", "Main", "RF"])
+        color.board_color(n, dark_mode=False, index=i)
+        for i, n in enumerate(["Power", "IO", "Main", "RF"])
     }
     assert len(seen) == 4
 
@@ -383,7 +420,10 @@ def test_board_colours_are_readable_in_both_modes():
     for i, name in enumerate(["Power", "IO", "Main", "RF", "Sensor", "Motor"]):
         for dark, bg in ((False, (255, 255, 255)), (True, (48, 48, 48))):
             c = color.board_color(name, dark_mode=dark, index=i)
-            assert color.contrast_ratio(c, bg) >= color.MIN_CONTRAST_AA_LARGE, (name, dark)
+            assert color.contrast_ratio(c, bg) >= color.MIN_CONTRAST_AA_LARGE, (
+                name,
+                dark,
+            )
 
 
 @pytest.mark.parametrize("text", ["#FF8800", "FF8800", "#F80"])
@@ -418,7 +458,7 @@ def test_version_directory_parsing(name, expected):
 
 def test_kicad_10_sorts_above_kicad_9():
     """
-    v12 used sorted(reverse=True) on directory names, and "9.0" > "10.0"
+    v1 used sorted(reverse=True) on directory names, and "9.0" > "10.0"
     lexicographically -- so it drove KiCad 9's toolchain against KiCad 10 files.
     """
     versions = [kicad_env.parse_version_dir(n) for n in ("9.0", "10.0", "8.0")]
@@ -446,7 +486,7 @@ def test_config_dir_honours_kicad_config_home(monkeypatch):
 
 def test_env_lib_dirs_reconstructs_missing_variables(monkeypatch):
     """
-    v12 dropped any fp-lib-table URI still containing '${' after substituting
+    v1 dropped any fp-lib-table URI still containing '${' after substituting
     KIPRJMOD, so libraries behind ${KICAD10_FOOTPRINT_DIR} silently vanished.
     """
     monkeypatch.delenv("KICAD10_FOOTPRINT_DIR", raising=False)
@@ -521,17 +561,23 @@ def test_cli_version_ignores_stderr(monkeypatch):
 
 
 def test_cli_version_ignores_a_failed_run(monkeypatch):
-    monkeypatch.setattr(kicad_env.subprocess, "run", _fake_run(stdout="10.0.5", returncode=1))
+    monkeypatch.setattr(
+        kicad_env.subprocess, "run", _fake_run(stdout="10.0.5", returncode=1)
+    )
     assert kicad_env._cli_version(Path("/fake/kicad-cli")) is None
 
 
 def test_cli_version_reads_a_successful_run(monkeypatch):
-    monkeypatch.setattr(kicad_env.subprocess, "run", _fake_run(stdout="10.0.5\n", returncode=0))
+    monkeypatch.setattr(
+        kicad_env.subprocess, "run", _fake_run(stdout="10.0.5\n", returncode=0)
+    )
     assert kicad_env._cli_version(Path("/fake/kicad-cli")) == (10, 0, 5)
 
 
 def test_cli_version_rejects_an_implausible_stdout_version(monkeypatch):
-    monkeypatch.setattr(kicad_env.subprocess, "run", _fake_run(stdout="wxWidgets 3.2.4", returncode=0))
+    monkeypatch.setattr(
+        kicad_env.subprocess, "run", _fake_run(stdout="wxWidgets 3.2.4", returncode=0)
+    )
     assert kicad_env._cli_version(Path("/fake/kicad-cli")) is None
 
 
@@ -620,7 +666,9 @@ def test_trash_check_survives_an_unreadable_file(tmp_path, monkeypatch):
         Path,
         "stat",
         lambda self, *a, **k: (
-            (_ for _ in ()).throw(OSError("gone")) if self.name == "a.bin" else real_stat(self, *a, **k)
+            (_ for _ in ()).throw(OSError("gone"))
+            if self.name == "a.bin"
+            else real_stat(self, *a, **k)
         ),
     )
 

@@ -122,7 +122,7 @@ def inproc_hint():
     Tell ``core.kicad_env`` what the KiCad we are running inside looks like.
 
     This is the most reliable source of both the version and the kicad-cli path,
-    and v12 used neither -- it went straight to ``shutil.which``. It lives here
+    and v1 used neither -- it went straight to ``shutil.which``. It lives here
     rather than in ``core`` because ``core`` may not import pcbnew; the plugin
     registers the hint once at start-up and discovery picks it up from there.
     """

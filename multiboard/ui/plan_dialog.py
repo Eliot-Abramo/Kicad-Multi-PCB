@@ -4,7 +4,7 @@
 """
 Update preview: see exactly what will change, before anything is written.
 
-v12's Update was a black box. You pressed it, it worked for a while, and then it
+v1's Update was a black box. You pressed it, it worked for a while, and then it
 told you how many components it had added. There was no way to notice it was
 about to add four hundred parts to the wrong board, and no way to stop it.
 
@@ -22,17 +22,28 @@ from ..core.plan import ACTION_LABELS, ACTION_ORDER, REMOVE, REPLACE, SKIP, Upda
 from .theme import apply_grid, set_row_colors
 from .widgets import SPACING_MD, SPACING_SM, BaseDialog, ReadOnlyText
 
-COLUMNS = [("", 34), ("Action", 130), ("Ref", 90), ("Reason", 300), ("From", 170), ("To", 170)]
+COLUMNS = [
+    ("", 34),
+    ("Action", 130),
+    ("Ref", 90),
+    ("Reason", 300),
+    ("From", 170),
+    ("To", 170),
+]
 
 
 class PlanDialog(BaseDialog):
     """Review an update plan and choose what to apply."""
 
     def __init__(self, parent, plan: UpdatePlan, *, allow_apply: bool = True):
-        super().__init__(parent, f"Update '{plan.board}'", size=(960, 640), min_size=(780, 520))
+        super().__init__(
+            parent, f"Update '{plan.board}'", size=(960, 640), min_size=(780, 520)
+        )
         self.plan = plan
         self.applied = False
-        self._rows = [i for i in plan.items if i.action != SKIP] + [i for i in plan.items if i.action == SKIP]
+        self._rows = [i for i in plan.items if i.action != SKIP] + [
+            i for i in plan.items if i.action == SKIP
+        ]
         self._build(allow_apply)
         self._refresh()
 
@@ -142,8 +153,12 @@ class PlanDialog(BaseDialog):
         for item in self.plan.items:
             if item.enabled and item.action != SKIP:
                 counts[item.action] = counts.get(item.action, 0) + 1
-        text = ", ".join(f"{ACTION_LABELS[a]} {counts[a]}" for a in ACTION_ORDER if counts.get(a))
-        self.selection_label.SetLabel(f"Will apply: {text}" if text else "Nothing selected")
+        text = ", ".join(
+            f"{ACTION_LABELS[a]} {counts[a]}" for a in ACTION_ORDER if counts.get(a)
+        )
+        self.selection_label.SetLabel(
+            f"Will apply: {text}" if text else "Nothing selected"
+        )
         self.apply.Enable(bool(counts))
 
     def _on_click(self, event) -> None:
@@ -169,7 +184,9 @@ class PlanDialog(BaseDialog):
         self._refresh()
 
 
-def review_plan(parent, plan: UpdatePlan, *, allow_apply: bool = True) -> Optional[UpdatePlan]:
+def review_plan(
+    parent, plan: UpdatePlan, *, allow_apply: bool = True
+) -> Optional[UpdatePlan]:
     """
     Show the plan. Returns it with the user's selections, or None if cancelled.
     """
@@ -184,13 +201,17 @@ class ResultDialog(BaseDialog):
     """What an update actually did, including anything that failed."""
 
     def __init__(self, parent, board: str, result):
-        super().__init__(parent, f"Updated '{board}'", size=(680, 440), min_size=(520, 340))
+        super().__init__(
+            parent, f"Updated '{board}'", size=(680, 440), min_size=(520, 340)
+        )
         sizer = wx.BoxSizer(wx.VERTICAL)
 
         headline = wx.StaticText(self, label=result.summary())
         headline.SetFont(self.theme.title_font())
         headline.SetForegroundColour(
-            self.theme.warning if (result.failed or result.cancelled) else self.theme.success
+            self.theme.warning
+            if (result.failed or result.cancelled)
+            else self.theme.success
         )
         sizer.Add(headline, 0, wx.ALL, SPACING_MD)
 

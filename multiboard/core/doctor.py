@@ -4,7 +4,7 @@
 """
 Preflight self-check with one-click repairs.
 
-Most of v12's failure modes were diagnosable but not diagnosed: a missing
+Most of v1's failure modes were diagnosable but not diagnosed: a missing
 kicad-cli, a broken schematic link, an unresolvable library variable, a stale
 lock file, or a corrupt generated footprint library all surfaced later as some
 unrelated-looking error. Doctor turns each into a named check with a fix button.
@@ -52,7 +52,9 @@ class Report:
 
     @property
     def worst(self) -> str:
-        return max((c.level for c in self.checks), key=lambda lv: _SEVERITY[lv], default=OK)
+        return max(
+            (c.level for c in self.checks), key=lambda lv: _SEVERITY[lv], default=OK
+        )
 
     def problems(self) -> list[Check]:
         return [c for c in self.checks if c.needs_attention]
@@ -164,7 +166,9 @@ def _check_cli(install) -> Check:
             fix_label="Re-detect",
         )
 
-    return Check("kicad_cli", OK, f"kicad-cli found ({install.describe()})", str(install.cli))
+    return Check(
+        "kicad_cli", OK, f"kicad-cli found ({install.describe()})", str(install.cli)
+    )
 
 
 def _check_version_match(install, backend) -> Check:
@@ -200,7 +204,10 @@ def _check_root_schematic(root: Path, cfg: ProjectConfig) -> Check:
     path = root / cfg.root_schematic
     if not path.exists():
         return Check(
-            "root_schematic", ERROR, f"Root schematic missing: {cfg.root_schematic}", f"Expected at {path}"
+            "root_schematic",
+            ERROR,
+            f"Root schematic missing: {cfg.root_schematic}",
+            f"Expected at {path}",
         )
     return Check("root_schematic", OK, f"Root schematic: {cfg.root_schematic}")
 
@@ -213,7 +220,8 @@ def _check_link_capability(root: Path) -> Check:
         "link_capability",
         ERROR,
         "This location cannot hold linked schematics",
-        detail + "\n\nCommon causes: the project is on a network drive; boards/ is on a "
+        detail
+        + "\n\nCommon causes: the project is on a network drive; boards/ is on a "
         "different filesystem; Windows without Developer Mode or Administrator.",
     )
 
@@ -227,7 +235,9 @@ def _check_links(root: Path, cfg: ProjectConfig) -> Check:
 
     source = root / cfg.root_schematic
     if not source.exists():
-        return Check("links_valid", WARN, "Cannot verify links without the root schematic")
+        return Check(
+            "links_valid", WARN, "Cannot verify links without the root schematic"
+        )
 
     broken = []
     for name, board in cfg.boards.items():
@@ -249,21 +259,31 @@ def _check_links(root: Path, cfg: ProjectConfig) -> Check:
             "links_valid",
             WARN,
             f"{len(broken)} board schematic link(s) need repair",
-            "\n".join(broken) + "\n\nA copied schematic drifts from the root and the boards stop agreeing.",
+            "\n".join(broken)
+            + "\n\nA copied schematic drifts from the root and the boards stop agreeing.",
             fix=lambda: _repair_links(root, cfg),
             fix_label="Repair links",
         )
-    return Check("links_valid", OK, f"All {len(cfg.boards)} board schematics are linked")
+    return Check(
+        "links_valid", OK, f"All {len(cfg.boards)} board schematics are linked"
+    )
 
 
 def _check_boards_exist(root: Path, cfg: ProjectConfig) -> Check:
-    missing = [name for name, b in cfg.boards.items() if not b.pcb_path or not (root / b.pcb_path).exists()]
+    missing = [
+        name
+        for name, b in cfg.boards.items()
+        if not b.pcb_path or not (root / b.pcb_path).exists()
+    ]
     if missing:
         return Check(
             "boards_exist",
             ERROR,
             f"{len(missing)} board PCB(s) missing",
-            "\n".join(f"{n}: {cfg.boards[n].pcb_path or '(no path recorded)'}" for n in missing),
+            "\n".join(
+                f"{n}: {cfg.boards[n].pcb_path or '(no path recorded)'}"
+                for n in missing
+            ),
         )
     return Check("boards_exist", OK, f"{len(cfg.boards)} board(s) present")
 
@@ -272,10 +292,14 @@ def _check_board_paths(root: Path, cfg: ProjectConfig) -> Check:
     """
     A board whose path fails the safety guard cannot be deleted from the UI.
 
-    v12 could reach a state where a board's ``pcb_path`` was empty, which made
+    v1 could reach a state where a board's ``pcb_path`` was empty, which made
     its delete target the project's *parent* directory.
     """
-    bad = [name for name, b in cfg.boards.items() if b.pcb_path and board_dir_for(root, b.pcb_path) is None]
+    bad = [
+        name
+        for name, b in cfg.boards.items()
+        if b.pcb_path and board_dir_for(root, b.pcb_path) is None
+    ]
     empty = [name for name, b in cfg.boards.items() if not b.pcb_path]
 
     if empty or bad:
@@ -285,7 +309,10 @@ def _check_board_paths(root: Path, cfg: ProjectConfig) -> Check:
             "Some boards have unusable paths",
             "".join(
                 [f"{n}: no PCB path recorded\n" for n in empty]
-                + [f"{n}: {cfg.boards[n].pcb_path} is not inside boards/\n" for n in bad]
+                + [
+                    f"{n}: {cfg.boards[n].pcb_path} is not inside boards/\n"
+                    for n in bad
+                ]
             )
             + "\nThese boards cannot be deleted from the UI, by design.",
         )
@@ -294,10 +321,10 @@ def _check_board_paths(root: Path, cfg: ProjectConfig) -> Check:
 
 def _check_block_library(root: Path) -> Check:
     """
-    Detect the damage v12's footprint generator left behind.
+    Detect the damage v1's footprint generator left behind.
 
     Its generator emitted two stray closing parens into every file it wrote, so
-    every Block_*.kicad_mod in every project ever created with v12 is
+    every Block_*.kicad_mod in every project ever created with v1 is
     unparseable. Nothing reported it because nothing ever tried to read them.
     """
     lib = root / f"{BLOCK_LIB_NAME}.pretty"
@@ -310,7 +337,8 @@ def _check_block_library(root: Path) -> Check:
             "block_lib",
             WARN,
             f"{len(problems)} block footprint(s) are malformed",
-            "\n".join(problems) + "\n\nBlock footprints written by version 12 of this plugin all carry "
+            "\n".join(problems)
+            + "\n\nBlock footprints written by version 1 of this plugin all carry "
             "stray closing parentheses and cannot be opened by KiCad.",
             fix=lambda: "Use Ports > Regenerate on each board, or Regenerate all blocks.",
             fix_label="Regenerate blocks",
@@ -344,14 +372,18 @@ def _check_orphan_dirs(root: Path, cfg: ProjectConfig) -> Check:
     orphans = [
         d.name
         for d in sorted(boards_dir.iterdir())
-        if d.is_dir() and d.name != TRASH_DIR and d.resolve() not in known and any(d.glob("*.kicad_pcb"))
+        if d.is_dir()
+        and d.name != TRASH_DIR
+        and d.resolve() not in known
+        and any(d.glob("*.kicad_pcb"))
     ]
     if orphans:
         return Check(
             "orphan_dirs",
             WARN,
             f"{len(orphans)} board director(ies) not in the config",
-            "\n".join(orphans) + "\n\nThey exist on disk but this project does not know "
+            "\n".join(orphans)
+            + "\n\nThey exist on disk but this project does not know "
             "about them. Import them, or move them out of boards/.",
         )
     return Check("orphan_dirs", OK, "No unmanaged board directories")
@@ -468,7 +500,9 @@ def _check_trash(root: Path) -> Check:
 def _redetect() -> str:
     kicad_env.invalidate()
     install = kicad_env.discover(refresh=True)
-    return f"Found {install.describe()}" if install else "Still could not find kicad-cli."
+    return (
+        f"Found {install.describe()}" if install else "Still could not find kicad-cli."
+    )
 
 
 def _repair_links(root: Path, cfg: ProjectConfig) -> str:
@@ -499,7 +533,9 @@ def _clear_locks(root: Path) -> str:
             removed += 1
         except OSError:
             pass
-    return f"Removed {removed} lock file(s). Make sure those boards are closed in KiCad."
+    return (
+        f"Removed {removed} lock file(s). Make sure those boards are closed in KiCad."
+    )
 
 
 def _empty_trash(root: Path) -> str:

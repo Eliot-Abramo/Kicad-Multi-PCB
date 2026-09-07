@@ -103,7 +103,9 @@ class DoctorDialog(BaseDialog):
             }[worst]
         )
 
-        first_problem = next((i for i, c in enumerate(self.report.checks) if c.needs_attention), 0)
+        first_problem = next(
+            (i for i, c in enumerate(self.report.checks) if c.needs_attention), 0
+        )
         if self.report.checks:
             self.list.SetSelection(first_problem)
         self._show_detail()
@@ -141,7 +143,8 @@ class DoctorDialog(BaseDialog):
             return
         if not confirm(
             self,
-            f"Run {len(fixable)} repair(s)?\n\n" + "\n".join(f"  {c.fix_label or c.title}" for c in fixable),
+            f"Run {len(fixable)} repair(s)?\n\n"
+            + "\n".join(f"  {c.fix_label or c.title}" for c in fixable),
             "Fix all",
         ):
             return
@@ -201,7 +204,9 @@ class NewBoardDialog(BaseDialog):
         self.name.Bind(wx.EVT_TEXT, lambda e: self._validate())
         sizer.Add(self.name, 0, wx.ALL | wx.EXPAND, SPACING_MD)
 
-        sizer.Add(self._label("Description (optional)"), 0, wx.LEFT | wx.RIGHT, SPACING_MD)
+        sizer.Add(
+            self._label("Description (optional)"), 0, wx.LEFT | wx.RIGHT, SPACING_MD
+        )
         self.desc = wx.TextCtrl(self, style=wx.TE_MULTILINE, size=(-1, 70))
         apply_input(self.desc)
         sizer.Add(self.desc, 1, wx.ALL | wx.EXPAND, SPACING_MD)
@@ -234,7 +239,9 @@ class NewBoardDialog(BaseDialog):
 
         if error:
             self.hint.SetLabel(error if name else "Enter a name to continue.")
-            self.hint.SetForegroundColour(self.theme.warning if name else self.theme.text_muted)
+            self.hint.SetForegroundColour(
+                self.theme.warning if name else self.theme.text_muted
+            )
             self.ok.Disable()
             return False
 
@@ -260,7 +267,12 @@ class PortEditDialog(BaseDialog):
     """One inter-board connection point."""
 
     def __init__(self, parent, port: Optional[PortDef], taken: list[str]):
-        super().__init__(parent, "Edit port" if port else "New port", size=(460, 340), min_size=(420, 300))
+        super().__init__(
+            parent,
+            "Edit port" if port else "New port",
+            size=(460, 340),
+            min_size=(420, 300),
+        )
         self.taken = [t for t in taken if not port or t != port.name]
         self.port = PortDef(
             name=port.name if port else "",
@@ -293,7 +305,12 @@ class PortEditDialog(BaseDialog):
 
         sizer.Add(grid, 0, wx.ALL | wx.EXPAND, SPACING_MD)
 
-        sizer.Add(wx.StaticText(self, label="Position along that edge"), 0, wx.LEFT | wx.RIGHT, SPACING_MD)
+        sizer.Add(
+            wx.StaticText(self, label="Position along that edge"),
+            0,
+            wx.LEFT | wx.RIGHT,
+            SPACING_MD,
+        )
         self.slider = wx.Slider(
             self,
             value=int(self.port.position * 100),
@@ -328,7 +345,12 @@ class PortEditDialog(BaseDialog):
             message(self, "A port needs a name.", "Port", wx.ICON_WARNING)
             return
         if name in self.taken:
-            message(self, f"This board already has a port named '{name}'.", "Port", wx.ICON_WARNING)
+            message(
+                self,
+                f"This board already has a port named '{name}'.",
+                "Port",
+                wx.ICON_WARNING,
+            )
             return
         self.port = PortDef(
             name=name,
@@ -343,9 +365,12 @@ class PortsDialog(BaseDialog):
     """The port list for one board."""
 
     def __init__(self, parent, board: BoardConfig):
-        super().__init__(parent, f"Ports on '{board.name}'", size=(620, 460), min_size=(540, 400))
+        super().__init__(
+            parent, f"Ports on '{board.name}'", size=(620, 460), min_size=(540, 400)
+        )
         self.ports: dict[str, PortDef] = {
-            n: PortDef(p.name, p.net, p.side, p.position) for n, p in board.ports.items()
+            n: PortDef(p.name, p.net, p.side, p.position)
+            for n, p in board.ports.items()
         }
         self._rows: list[str] = []
         self._build()
@@ -355,7 +380,9 @@ class PortsDialog(BaseDialog):
         sizer = wx.BoxSizer(wx.VERTICAL)
 
         self.list = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
-        for i, (label, width) in enumerate([("Port", 150), ("Net", 170), ("Edge", 90), ("Position", 90)]):
+        for i, (label, width) in enumerate(
+            [("Port", 150), ("Net", 170), ("Edge", 90), ("Position", 90)]
+        ):
             self.list.InsertColumn(i, label, width=width)
         self.list.SetFont(self.theme.body_font())
         apply_input(self.list)
@@ -433,7 +460,9 @@ class PortsDialog(BaseDialog):
 class ReportDialog(BaseDialog):
     """A monospace report: DRC, health, anything textual."""
 
-    def __init__(self, parent, title: str, body: str, *, headline: str = "", kind: str = "info"):
+    def __init__(
+        self, parent, title: str, body: str, *, headline: str = "", kind: str = "info"
+    ):
         super().__init__(parent, title, size=(860, 600), min_size=(640, 440))
         sizer = wx.BoxSizer(wx.VERTICAL)
 
@@ -479,7 +508,7 @@ class OnboardingDialog(BaseDialog):
     """
     First-run setup.
 
-    Four steps, each of which removes a way v12 could leave a project subtly
+    Four steps, each of which removes a way v1 could leave a project subtly
     wrong: it confirms the source of truth instead of guessing from a
     nondeterministic glob; it *tests* schematic linking rather than discovering
     the failure later; it offers boards from the schematic's own structure; and
@@ -487,7 +516,9 @@ class OnboardingDialog(BaseDialog):
     """
 
     def __init__(self, parent, root: Path, sheets: list[str], detected: list[dict]):
-        super().__init__(parent, "Set up multi-board", size=(680, 560), min_size=(600, 480))
+        super().__init__(
+            parent, "Set up multi-board", size=(680, 560), min_size=(600, 480)
+        )
         self.root = root
         self.sheets = sheets
         self.detected = detected or detect_root_files(root)
@@ -526,7 +557,12 @@ class OnboardingDialog(BaseDialog):
 
     def _show_page(self) -> None:
         self.body_sizer.Clear(delete_windows=True)
-        builder = [self._page_source, self._page_linking, self._page_boards, self._page_rules][self._page]
+        builder = [
+            self._page_source,
+            self._page_linking,
+            self._page_boards,
+            self._page_rules,
+        ][self._page]
         builder()
         self.back.Enable(self._page > 0)
         self.next.SetLabel("Finish" if self._page == 3 else "Next")
@@ -553,7 +589,10 @@ class OnboardingDialog(BaseDialog):
 
         self.choice = wx.Choice(
             self.body,
-            choices=[f"{c['project']}  ->  {c['schematic'] or 'no schematic'}" for c in self.detected],
+            choices=[
+                f"{c['project']}  ->  {c['schematic'] or 'no schematic'}"
+                for c in self.detected
+            ],
         )
         self.choice.SetSelection(0)
         self.body_sizer.Add(self.choice, 0, wx.EXPAND | wx.BOTTOM, SPACING_MD)
@@ -639,7 +678,10 @@ class OnboardingDialog(BaseDialog):
             return
         if delta > 0 and self._page == 0 and self.choice is None:
             message(
-                self, "There is no KiCad project here to set up.", "Nothing to configure", wx.ICON_WARNING
+                self,
+                "There is no KiCad project here to set up.",
+                "Nothing to configure",
+                wx.ICON_WARNING,
             )
             return
 

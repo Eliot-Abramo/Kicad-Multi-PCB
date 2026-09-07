@@ -95,7 +95,7 @@ class MultiBoardManager:
         """
         Create a sub-board: directory, project file, linked schematic, empty PCB.
 
-        Rolls back completely on failure. v12's rollback removed only the
+        Rolls back completely on failure. v1's rollback removed only the
         ``.kicad_pcb`` and then tried ``rmdir``, which failed because the project
         and library-table files it had already written were still there -- so a
         failed creation left a half-built directory behind.
@@ -157,7 +157,9 @@ class MultiBoardManager:
             self._drop_block_footprint(name)
             raise
 
-    def _setup_board_project(self, board: BoardConfig, board_dir: Path, dir_name: str) -> None:
+    def _setup_board_project(
+        self, board: BoardConfig, board_dir: Path, dir_name: str
+    ) -> None:
         """Write the sub-project file and link the schematic hierarchy."""
         source = self.ws.root_schematic()
         if source is None:
@@ -221,7 +223,9 @@ class MultiBoardManager:
                 f"{pcb_path} is not inside this project ({self.root}), so it cannot be imported."
             ) from exc
         if board_dir_for(self.root, rel) is None:
-            raise ValueError(f"{rel} is not a board directory.\nBoards must live one level under boards/.")
+            raise ValueError(
+                f"{rel} is not a board directory.\nBoards must live one level under boards/."
+            )
         board = BoardConfig(name=name, pcb_path=rel)
         self.config.boards[name] = board
         self.ws.save_config()
@@ -237,7 +241,7 @@ class MultiBoardManager:
 
         Returns where it went, so the UI can tell the user how to get it back.
 
-        Never ``shutil.rmtree``. v12 derived the directory from ``pcb_path``,
+        Never ``shutil.rmtree``. v1 derived the directory from ``pcb_path``,
         guarded it with the substring test ``"boards" in str(path)``, and could
         therefore be pointed at the project's parent by an empty ``pcb_path``.
         """
@@ -304,9 +308,9 @@ class MultiBoardManager:
 
     def regenerate_all_blocks(self) -> tuple[int, list[str]]:
         """
-        Rewrite every block footprint. This is Doctor's repair for v12 damage.
+        Rewrite every block footprint. This is Doctor's repair for v1 damage.
 
-        Every block footprint v12 ever wrote carries two stray closing parens and
+        Every block footprint v1 ever wrote carries two stray closing parens and
         cannot be parsed by KiCad, so an upgraded project needs exactly this.
         """
         done, failed = 0, []
@@ -322,7 +326,7 @@ class MultiBoardManager:
         """
         Write a marker footprint for every declared port.
 
-        v12 had this function but never called it from anywhere, so the
+        v1 had this function but never called it from anywhere, so the
         ``MultiBoard_Ports`` library the README documents was never created.
         """
         names = {p.name for b in self.config.boards.values() for p in b.ports.values()}
@@ -348,7 +352,7 @@ class MultiBoardManager:
         """
         Write a reviewed plan to a board.
 
-        Re-entrancy is blocked outright. v12 showed its progress dialog
+        Re-entrancy is blocked outright. v1 showed its progress dialog
         non-modally and pumped the event loop from inside the update, so a second
         Update could start while the first was mid-write -- two runs sharing one
         temp netlist and both calling SaveBoard on the same file.
@@ -359,7 +363,9 @@ class MultiBoardManager:
         pcb = self._require_free(board_name)
         netlist = netlist_path(self.root)
         if not netlist.exists():
-            raise ValueError("No netlist is available. Refresh first so the schematic can be exported.")
+            raise ValueError(
+                "No netlist is available. Refresh first so the schematic can be exported."
+            )
 
         self._busy = True
         try:
@@ -390,7 +396,10 @@ class MultiBoardManager:
             if board_dir is None:
                 continue
             try:
-                if link_file(source, board_dir / f"{board_dir.name}.kicad_sch") != "already":
+                if (
+                    link_file(source, board_dir / f"{board_dir.name}.kicad_sch")
+                    != "already"
+                ):
                     repaired += 1
             except SchematicLinkError as exc:
                 failed.append(f"{name}: {exc}")

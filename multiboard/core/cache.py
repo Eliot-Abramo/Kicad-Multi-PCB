@@ -4,9 +4,9 @@
 """
 Atomic JSON persistence.
 
-v12 wrote its config with a plain ``write_text``: truncate, then write. A crash
+v1 wrote its config with a plain ``write_text``: truncate, then write. A crash
 or a full disk mid-write left a zero-length ``.kicad_multiboard.json`` and there
-was no backup, so the project's board list was simply gone. Every write in v13
+was no backup, so the project's board list was simply gone. Every write in v2
 goes through :func:`atomic_write_json`.
 """
 
@@ -22,7 +22,9 @@ class ConfigCorrupt(Exception):
     """Raised when a JSON file and its backup are both unreadable."""
 
 
-def atomic_write_json(path: Path, obj: Any, *, backup: bool = True, indent: Optional[int] = 2) -> None:
+def atomic_write_json(
+    path: Path, obj: Any, *, backup: bool = True, indent: Optional[int] = 2
+) -> None:
     """
     Write ``obj`` to ``path`` such that ``path`` is never partially written.
 
@@ -32,7 +34,9 @@ def atomic_write_json(path: Path, obj: Any, *, backup: bool = True, indent: Opti
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
@@ -59,7 +63,7 @@ def read_json(path: Path, *, recover: bool = True) -> tuple[Any, Optional[str]]:
 
     Returns ``(data, warning)``. ``warning`` is a human-readable string when the
     primary file was unusable and the backup was used instead, so the caller can
-    surface it rather than silently continuing with recovered data. v12 caught
+    surface it rather than silently continuing with recovered data. v1 caught
     the exception, logged it, and carried on with an empty config -- which
     presented as "all my boards disappeared".
     """
@@ -74,15 +78,24 @@ def read_json(path: Path, *, recover: bool = True) -> tuple[Any, Optional[str]]:
     bak = path.with_suffix(path.suffix + ".bak")
     try:
         data = json.loads(bak.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
-        raise ConfigCorrupt(f"{path.name} is unreadable and no usable backup exists ({exc})") from exc
+    except (
+        FileNotFoundError,
+        json.JSONDecodeError,
+        OSError,
+        UnicodeDecodeError,
+    ) as exc:
+        raise ConfigCorrupt(
+            f"{path.name} is unreadable and no usable backup exists ({exc})"
+        ) from exc
 
     return data, f"{path.name} was corrupt; recovered from {bak.name}"
 
 
 def write_json_compact(path: Path, obj: Any) -> None:
     """Atomic write with no indentation, for machine-only files like the index cache."""
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:

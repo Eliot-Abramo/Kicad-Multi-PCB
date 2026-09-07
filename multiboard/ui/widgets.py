@@ -4,7 +4,7 @@
 """
 Shared widgets and dialog plumbing.
 
-Several v12 bugs were structural rather than cosmetic and are fixed here once:
+Several v1 bugs were structural rather than cosmetic and are fixed here once:
 
 * ``BaseDialog._on_char`` called ``EndModal`` unconditionally, which asserts when
   the dialog was shown non-modally. :class:`BaseDialog` checks ``IsModal`` first.
@@ -29,7 +29,7 @@ def typing_in_text(window: Optional[wx.Window] = None) -> bool:
     Whether keyboard focus is in something that consumes ordinary keys.
 
     Every ``EVT_CHAR_HOOK`` handler must consult this before acting on a bare
-    key. v12 did not, and mapped Backspace to "delete board" globally -- so its
+    key. v1 did not, and mapped Backspace to "delete board" globally -- so its
     filter box could not be used at all.
     """
     focus = window or wx.Window.FindFocus()
@@ -49,17 +49,26 @@ def show_modal(dialog: wx.Dialog) -> int:
         dialog.Destroy()
 
 
-def message(parent, text: str, caption: str = "Multi-Board Manager", icon: int = wx.ICON_INFORMATION) -> int:
+def message(
+    parent,
+    text: str,
+    caption: str = "Multi-Board Manager",
+    icon: int = wx.ICON_INFORMATION,
+) -> int:
     """A message box with a button flag actually set.
 
-    v12 passed ``wx.ICON_ERROR`` as the style with no button flag OR-ed in at
+    v1 passed ``wx.ICON_ERROR`` as the style with no button flag OR-ed in at
     roughly twenty call sites, which works by luck on GTK and asserts elsewhere.
     """
     return wx.MessageBox(text, caption, wx.OK | icon, parent)
 
 
-def confirm(parent, text: str, caption: str = "Confirm", icon: int = wx.ICON_WARNING) -> bool:
-    return wx.MessageBox(text, caption, wx.YES_NO | wx.NO_DEFAULT | icon, parent) == wx.YES
+def confirm(
+    parent, text: str, caption: str = "Confirm", icon: int = wx.ICON_WARNING
+) -> bool:
+    return (
+        wx.MessageBox(text, caption, wx.YES_NO | wx.NO_DEFAULT | icon, parent) == wx.YES
+    )
 
 
 class BaseDialog(wx.Dialog):
@@ -105,7 +114,7 @@ class BaseDialog(wx.Dialog):
         """
         Close correctly regardless of how the dialog was shown.
 
-        v12 called ``EndModal`` from a handler shared with a non-modal progress
+        v1 called ``EndModal`` from a handler shared with a non-modal progress
         dialog, and separately called ``Destroy`` twice on the main window -- so
         every normal close produced a "wrapped C/C++ object has been deleted"
         error box.
@@ -286,7 +295,7 @@ class Banner(wx.Panel):
 
         background = self.theme.tint(accent, 0.16)
         self.SetBackgroundColour(background)
-        # Both halves, always: this is the pairing rule that v12 broke.
+        # Both halves, always: this is the pairing rule that v1 broke.
         self.label.SetForegroundColour(self.theme.readable(self.theme.text, background))
         self.Refresh()
 
@@ -417,7 +426,9 @@ class FilterChips(wx.Panel):
         self.sizer = wx.WrapSizer(wx.HORIZONTAL)
         self.SetSizer(self.sizer)
 
-    def set_chips(self, chips: Sequence[tuple[str, str, int, Optional[wx.Colour]]]) -> None:
+    def set_chips(
+        self, chips: Sequence[tuple[str, str, int, Optional[wx.Colour]]]
+    ) -> None:
         """
         ``chips`` is ``(key, label, count, colour)``.
 
@@ -437,7 +448,9 @@ class FilterChips(wx.Panel):
         wx.CallAfter(self._rebuild)
 
     def _relabel(self, chips: list) -> None:
-        for (_key, button, _old), (_k, label, count, colour) in zip(self._buttons, chips):
+        for (_key, button, _old), (_k, label, count, colour) in zip(
+            self._buttons, chips
+        ):
             button.SetLabel(f"{label} ({count})" if count is not None else label)
             if colour is not None:
                 button.SetForegroundColour(self.theme.readable(colour))
@@ -493,7 +506,9 @@ class ReadOnlyText(wx.TextCtrl):
     """A read-only multi-line text area, themed as a matched pair."""
 
     def __init__(self, parent, value: str = "", *, mono: bool = True):
-        super().__init__(parent, value=value, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_DONTWRAP)
+        super().__init__(
+            parent, value=value, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_DONTWRAP
+        )
         self.SetFont(get_theme().mono_font() if mono else get_theme().body_font())
         apply_input(self)
 
@@ -505,7 +520,7 @@ class ProgressPanel(wx.Dialog):
     """
     A cancellable progress dialog that cannot be re-entered.
 
-    v12 showed this non-modally and pumped the event loop with bare
+    v1 showed this non-modally and pumped the event loop with bare
     ``wx.Yield()``, so pressing Update again mid-update started a second run
     against the same board and the same temp netlist. ``wx.WindowDisabler``
     plus ``wx.SafeYield`` closes that; the cancel token means a long operation
@@ -513,7 +528,9 @@ class ProgressPanel(wx.Dialog):
     """
 
     def __init__(self, parent, title: str = "Working..."):
-        super().__init__(parent, title=title, size=(460, 170), style=wx.CAPTION | wx.SYSTEM_MENU)
+        super().__init__(
+            parent, title=title, size=(460, 170), style=wx.CAPTION | wx.SYSTEM_MENU
+        )
         self.theme = get_theme()
         self._cancelled = False
 
@@ -590,13 +607,15 @@ class VirtualListCtrl(wx.ListCtrl):
     """
     A report-mode list backed by a Python sequence.
 
-    Virtual so a ten-thousand-component design costs nothing to display. v12's
+    Virtual so a ten-thousand-component design costs nothing to display. v1's
     equivalent inserted real rows and truncated at 100 per board, which meant a
     component past position 100 was simply invisible.
     """
 
     def __init__(self, parent, columns: Sequence[tuple[str, int]], **kwargs):
-        super().__init__(parent, style=wx.LC_REPORT | wx.LC_VIRTUAL | wx.LC_SINGLE_SEL, **kwargs)
+        super().__init__(
+            parent, style=wx.LC_REPORT | wx.LC_VIRTUAL | wx.LC_SINGLE_SEL, **kwargs
+        )
         self._rows: list[Sequence[str]] = []
         self._colors: list[Optional[wx.Colour]] = []
         self._attrs: dict[tuple, wx.ItemAttr] = {}
@@ -607,7 +626,11 @@ class VirtualListCtrl(wx.ListCtrl):
         self.SetFont(self.theme.body_font())
         apply_input(self)
 
-    def set_rows(self, rows: list[Sequence[str]], colors: Optional[list[Optional[wx.Colour]]] = None) -> None:
+    def set_rows(
+        self,
+        rows: list[Sequence[str]],
+        colors: Optional[list[Optional[wx.Colour]]] = None,
+    ) -> None:
         self._rows = rows
         self._colors = colors or [None] * len(rows)
         self.SetItemCount(len(rows))

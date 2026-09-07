@@ -6,7 +6,7 @@ Read a ``.kicad_pcb`` as text and extract what the component index needs.
 
 This replaces ``pcbnew.LoadBoard`` for every read-only query. LoadBoard also
 builds the connectivity engine and design-rule state we never use, and costs
-1-3 s per board -- which is why v12's board list froze KiCad for seconds on
+1-3 s per board -- which is why v1's board list froze KiCad for seconds on
 every keystroke in its filter box.
 
 Only the fields below are extracted; see :data:`FOOTPRINT_TAGS` for why that
@@ -46,7 +46,19 @@ KNOWN_FORMATS = {
 NEWEST_KNOWN_FORMAT = 20260206
 
 FOOTPRINT_TAGS = frozenset(
-    {"at", "layer", "uuid", "tstamp", "path", "attr", "locked", "property", "fp_text", "pad", "net"}
+    {
+        "at",
+        "layer",
+        "uuid",
+        "tstamp",
+        "path",
+        "attr",
+        "locked",
+        "property",
+        "fp_text",
+        "pad",
+        "net",
+    }
 )
 """
 Exactly the child tags :func:`_parse_footprint` reads. Everything else is
@@ -267,7 +279,9 @@ def _parse_footprint(node: sexpr.Node) -> PcbFootprint:
     layer = sexpr.atom(sexpr.find(node, "layer"), default="F.Cu")
 
     # KiCad 8+ writes (uuid "..."); 6/7 wrote (tstamp "...").
-    uuid = sexpr.atom(sexpr.find(node, "uuid")) or sexpr.atom(sexpr.find(node, "tstamp"))
+    uuid = sexpr.atom(sexpr.find(node, "uuid")) or sexpr.atom(
+        sexpr.find(node, "tstamp")
+    )
     path = sexpr.atom(sexpr.find(node, "path"))
 
     ref, value = _read_ref_value(node)
@@ -343,9 +357,9 @@ def validate_footprint_library(lib_dir: Path) -> list[str]:
     """
     Problems in a generated ``.pretty``, as human-readable strings.
 
-    This is what Doctor uses to detect the v12 block-footprint damage: its
+    This is what Doctor uses to detect the v1 block-footprint damage: its
     generator emitted two stray closing parens into every file it wrote, so
-    every ``Block_*.kicad_mod`` in every project created with v12 is
+    every ``Block_*.kicad_mod`` in every project created with v1 is
     unparseable and the whole feature silently never worked.
     """
     problems: list[str] = []
@@ -354,7 +368,9 @@ def validate_footprint_library(lib_dir: Path) -> list[str]:
 
     for mod in sorted(lib_dir.glob("*.kicad_mod")):
         try:
-            text = sexpr.strip_preamble(mod.read_text(encoding="utf-8", errors="replace"))
+            text = sexpr.strip_preamble(
+                mod.read_text(encoding="utf-8", errors="replace")
+            )
         except OSError as exc:
             problems.append(f"{mod.name}: unreadable ({exc})")
             continue

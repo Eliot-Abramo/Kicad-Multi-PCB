@@ -4,10 +4,10 @@
 """
 Colour maths, kept free of wx so it can be unit-tested on a headless runner.
 
-The theme layer depends on these to guarantee two things v12 got wrong:
+The theme layer depends on these to guarantee two things v1 got wrong:
 
 * Every accent colour meets WCAG AA against the background it is actually drawn
-  on, in both light and dark mode. v12 hardcoded a light-mode palette, so its
+  on, in both light and dark mode. v1 hardcoded a light-mode palette, so its
   greys and pastels were invisible on a dark background.
 * Row tints are produced by blending an accent *into the current background*
   rather than being fixed pastels. ``#FFF3E0`` reads as a warm cream on white
@@ -137,7 +137,9 @@ def board_color(name: str, *, dark_mode: bool, index: int = -1) -> RGB:
     # Dark backgrounds need lighter, less saturated accents to stay readable;
     # light backgrounds need the opposite.
     lightness, saturation = (0.72, 0.55) if dark_mode else (0.38, 0.62)
-    rgb = tuple(round(c * 255) for c in colorsys.hls_to_rgb(hue / 360.0, lightness, saturation))
+    rgb = tuple(
+        round(c * 255) for c in colorsys.hls_to_rgb(hue / 360.0, lightness, saturation)
+    )
     return rgb  # type: ignore[return-value]
 
 

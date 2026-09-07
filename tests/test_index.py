@@ -4,9 +4,9 @@
 """
 The three-layer ownership model.
 
-One test per row of the reconciliation truth table, plus the cases v12 got
+One test per row of the reconciliation truth table, plus the cases v1 got
 wrong: duplicate placements (silently overwritten), and per-board cache
-invalidation (v12 threw the whole cache away on every keystroke).
+invalidation (v1 threw the whole cache away on every keystroke).
 """
 
 from pathlib import Path
@@ -42,8 +42,10 @@ def test_misplaced_when_placed_on_a_different_board():
 
 
 def test_duplicate_outranks_everything():
-    """v12 silently kept whichever board came last in dict order."""
-    assert classify(_sch(), "Power", [_place("Power"), _place("IO")]) == Status.DUPLICATE
+    """v1 silently kept whichever board came last in dict order."""
+    assert (
+        classify(_sch(), "Power", [_place("Power"), _place("IO")]) == Status.DUPLICATE
+    )
 
 
 def test_adopt_when_placed_without_intent():
@@ -171,10 +173,20 @@ def indexed(project: Path, make_board):
                     "sheet": "/Power/",
                     "nets": {"1": "GND", "2": "VCC"},
                 },
-                {"ref": "U1", "value": "REG", "footprint": "U:SOT23", "sheet": "/Power/"},
+                {
+                    "ref": "U1",
+                    "value": "REG",
+                    "footprint": "U:SOT23",
+                    "sheet": "/Power/",
+                },
                 {"ref": "J1", "value": "USB", "footprint": "J:USB", "sheet": "/IO/"},
                 {"ref": "R9", "value": "1k", "footprint": "R:0402", "sheet": "/IO/"},
-                {"ref": "C7", "value": "100n", "footprint": "C:0402", "sheet": "/Power/"},
+                {
+                    "ref": "C7",
+                    "value": "100n",
+                    "footprint": "C:0402",
+                    "sheet": "/Power/",
+                },
                 {"ref": "R99", "value": "DNP", "footprint": "R:0402", "sheet": "/IO/"},
             ]
         ),
@@ -235,11 +247,17 @@ def test_rule_pointing_elsewhere_reports_misplaced(indexed):
 def test_duplicate_across_boards_is_reported_not_overwritten(project, make_board):
     """The defect this whole model exists to fix."""
     cfg = ProjectConfig(root_schematic="demo.kicad_sch")
-    cfg.boards["A"] = BoardConfig("A", make_board("A", [{"ref": "R1", "fpid": "R:0402"}]))
-    cfg.boards["B"] = BoardConfig("B", make_board("B", [{"ref": "R1", "fpid": "R:0402"}]))
+    cfg.boards["A"] = BoardConfig(
+        "A", make_board("A", [{"ref": "R1", "fpid": "R:0402"}])
+    )
+    cfg.boards["B"] = BoardConfig(
+        "B", make_board("B", [{"ref": "R1", "fpid": "R:0402"}])
+    )
 
     netlist = project / "n.xml"
-    netlist.write_text(make_netlist([{"ref": "R1", "footprint": "R:0402"}]), encoding="utf-8")
+    netlist.write_text(
+        make_netlist([{"ref": "R1", "footprint": "R:0402"}]), encoding="utf-8"
+    )
 
     idx = ComponentIndex(project, cfg)
     idx.refresh(netlist=netlist)
@@ -252,7 +270,9 @@ def test_duplicate_across_boards_is_reported_not_overwritten(project, make_board
 
 def test_orphan_detected_when_schematic_drops_a_part(project, make_board):
     cfg = ProjectConfig(root_schematic="demo.kicad_sch")
-    cfg.boards["A"] = BoardConfig("A", make_board("A", [{"ref": "R1", "fpid": "R:0402"}]))
+    cfg.boards["A"] = BoardConfig(
+        "A", make_board("A", [{"ref": "R1", "fpid": "R:0402"}])
+    )
     netlist = project / "n.xml"
     netlist.write_text(make_netlist([]), encoding="utf-8")
 
@@ -270,13 +290,19 @@ def test_managed_footprints_are_not_components(project, make_board):
             "A",
             [
                 {"ref": "R1", "fpid": "R:0402"},
-                {"ref": "MB1", "fpid": "MultiBoard_Blocks:Block_IO", "attrs": ["board_only"]},
+                {
+                    "ref": "MB1",
+                    "fpid": "MultiBoard_Blocks:Block_IO",
+                    "attrs": ["board_only"],
+                },
                 {"ref": "#PWR01", "fpid": "power:GND"},
             ],
         ),
     )
     netlist = project / "n.xml"
-    netlist.write_text(make_netlist([{"ref": "R1", "footprint": "R:0402"}]), encoding="utf-8")
+    netlist.write_text(
+        make_netlist([{"ref": "R1", "footprint": "R:0402"}]), encoding="utf-8"
+    )
 
     idx = ComponentIndex(project, cfg)
     idx.refresh(netlist=netlist)
@@ -302,11 +328,15 @@ def test_net_index_spans_boards_and_both_netcode_forms(indexed):
 def test_exact_reference_outranks_prefix_matches(project, make_board):
     cfg = ProjectConfig(root_schematic="demo.kicad_sch")
     cfg.boards["A"] = BoardConfig(
-        "A", make_board("A", [{"ref": f"R{n}", "fpid": "R:0402"} for n in (4, 40, 41, 42)])
+        "A",
+        make_board("A", [{"ref": f"R{n}", "fpid": "R:0402"} for n in (4, 40, 41, 42)]),
     )
     netlist = project / "n.xml"
     netlist.write_text(
-        make_netlist([{"ref": f"R{n}", "footprint": "R:0402"} for n in (4, 40, 41, 42)]), encoding="utf-8"
+        make_netlist(
+            [{"ref": f"R{n}", "footprint": "R:0402"} for n in (4, 40, 41, 42)]
+        ),
+        encoding="utf-8",
     )
 
     idx = ComponentIndex(project, cfg)
@@ -349,7 +379,7 @@ def test_second_refresh_uses_the_cache(indexed, project):
 
 
 def test_touching_one_board_rescans_only_that_board(indexed, project):
-    """v12 discarded the entire cache on every list refresh."""
+    """v1 discarded the entire cache on every list refresh."""
     pcb = project / "boards" / "IO" / "IO.kicad_pcb"
     pcb.write_text(pcb.read_text(encoding="utf-8") + "\n", encoding="utf-8")
 
@@ -409,7 +439,9 @@ def test_refresh_builds_the_reverse_net_index(project, make_board):
     from multiboard.core.index import ComponentIndex
     from multiboard.core.netlist import netlist_path
 
-    rel = make_board("Power", [{"ref": "R1", "value": "10k", "pads": [("1", "GND"), ("2", "VCC")]}])
+    rel = make_board(
+        "Power", [{"ref": "R1", "value": "10k", "pads": [("1", "GND"), ("2", "VCC")]}]
+    )
     cfg = ProjectConfig()
     cfg.boards["Power"] = BoardConfig(name="Power", pcb_path=rel)
 

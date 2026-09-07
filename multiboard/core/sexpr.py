@@ -125,7 +125,7 @@ def scan_health(text: str) -> tuple[bool, int]:
     Return ``(balanced, final_depth)`` for a document.
 
     ``final_depth != 0`` means the file is truncated (positive) or has stray
-    closing parens (negative). The block-footprint generator in v12 produced
+    closing parens (negative). The block-footprint generator in v1 produced
     ``-2`` on every file it wrote, which is why every generated block footprint
     was unparseable; this function is what the Doctor check uses to detect the
     damage.
@@ -153,7 +153,9 @@ def _skip_string(text: str, i: int) -> int:
     return _STRING.match(text, i).end()
 
 
-def parse_span(text: str, start: int, end: int, keep: Optional[frozenset] = None) -> Node:
+def parse_span(
+    text: str, start: int, end: int, keep: Optional[frozenset] = None
+) -> Node:
     """
     Build a tuple tree for ``text[start:end]``, which must be one node.
 
@@ -184,7 +186,9 @@ def parse(text: str) -> Node:
     return parse_span(text, i, len(text))
 
 
-def _parse_node(text: str, i: int, end: int, keep: Optional[frozenset] = None) -> tuple[Optional[Node], int]:
+def _parse_node(
+    text: str, i: int, end: int, keep: Optional[frozenset] = None
+) -> tuple[Optional[Node], int]:
     # Hand-rolled character loops, deliberately. Replacing these with compiled
     # regexes was measurably *slower* (0.8-0.87x): the tokens here are a few
     # characters long, so allocating a match object per token costs more than
@@ -339,7 +343,7 @@ def quote(s: str) -> str:
     """
     Quote a string for emission into an s-expression.
 
-    v12 interpolated board and port names directly into generated ``.kicad_mod``
+    v1 interpolated board and port names directly into generated ``.kicad_mod``
     text, so a name containing a quote or backslash produced a broken file. Every
     write path now goes through here.
     """
