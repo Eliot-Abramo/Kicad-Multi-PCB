@@ -213,9 +213,7 @@ class SwigBackend(Backend):
         # A block represents a board, not a part: keep it out of the BOM and the
         # pick-and-place output.
         try:
-            fp.SetAttributes(
-                p.FP_BOARD_ONLY | p.FP_EXCLUDE_FROM_POS_FILES | p.FP_EXCLUDE_FROM_BOM
-            )
+            fp.SetAttributes(p.FP_BOARD_ONLY | p.FP_EXCLUDE_FROM_POS_FILES | p.FP_EXCLUDE_FROM_BOM)
         except Exception:
             for setter in (
                 "SetBoardOnly",
@@ -242,9 +240,7 @@ class SwigBackend(Backend):
 
         radius = spec.corner_radius()
         self._rounded_outline(fp, hw, hh, radius, p.F_SilkS, 0.32, "solid")
-        self._rounded_outline(
-            fp, hw - 1.8, hh - 1.8, max(0.5, radius - 1.8), p.F_SilkS, 0.14, "dash"
-        )
+        self._rounded_outline(fp, hw - 1.8, hh - 1.8, max(0.5, radius - 1.8), p.F_SilkS, 0.14, "dash")
         self._rounded_outline(fp, hw, hh, radius, p.F_Fab, 0.12, "solid")
 
         # Courtyard, 1 mm proud of the outline.
@@ -257,9 +253,7 @@ class SwigBackend(Backend):
         fp.Add(court)
 
         self._pin1_marker(fp, -hw + 1.2, -hh + 1.2, 2.2)
-        self._text(
-            fp, spec.name, 0, 0, size=2.5, thickness=0.4, layer=p.F_SilkS, bold=True
-        )
+        self._text(fp, spec.name, 0, 0, size=2.5, thickness=0.4, layer=p.F_SilkS, bold=True)
 
         for port in sorted(spec.ports, key=lambda pt: (pt.side, pt.position, pt.name)):
             self._port_pad(fp, spec, port)
@@ -599,9 +593,7 @@ class SwigBackend(Backend):
         p.SaveBoard(str(pcb_path), board)
         return result
 
-    def _link_paths(
-        self, footprints: dict[str, object], netlist_path: Path, result: ApplyResult
-    ) -> None:
+    def _link_paths(self, footprints: dict[str, object], netlist_path: Path, result: ApplyResult) -> None:
         """
         Write each footprint's KIID path so KiCad knows which symbol it is.
 
@@ -711,11 +703,7 @@ class SwigBackend(Backend):
         x0, y0 = PACK_ORIGIN
         for i, fp in enumerate(footprints):
             col, row = i % PACK_MAX_PER_ROW, i // PACK_MAX_PER_ROW
-            fp.SetPosition(
-                compat.vec_mm(
-                    x0 + col * PACK_GRID_SPACING, y0 + row * PACK_GRID_SPACING
-                )
-            )
+            fp.SetPosition(compat.vec_mm(x0 + col * PACK_GRID_SPACING, y0 + row * PACK_GRID_SPACING))
 
     # =====================================================================
     # Footprint loading

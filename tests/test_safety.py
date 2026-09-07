@@ -98,18 +98,12 @@ def test_rejects_escaping_paths(tmp_path, candidate):
 
 
 def test_accepts_ordinary_relative_paths(tmp_path):
-    assert (
-        safe_relative(tmp_path, "sub/sheet.kicad_sch")
-        == tmp_path / "sub" / "sheet.kicad_sch"
-    )
+    assert safe_relative(tmp_path, "sub/sheet.kicad_sch") == tmp_path / "sub" / "sheet.kicad_sch"
     assert safe_relative(tmp_path, "./sheet.kicad_sch") == tmp_path / "sheet.kicad_sch"
 
 
 def test_backslashes_are_treated_as_separators(tmp_path):
-    assert (
-        safe_relative(tmp_path, "sub\\sheet.kicad_sch")
-        == tmp_path / "sub" / "sheet.kicad_sch"
-    )
+    assert safe_relative(tmp_path, "sub\\sheet.kicad_sch") == tmp_path / "sub" / "sheet.kicad_sch"
 
 
 # =============================================================================
@@ -208,9 +202,7 @@ def test_valid_names_are_accepted():
     assert is_valid_board_name("IO Board 2") is None
 
 
-@pytest.mark.parametrize(
-    "name", ["CON", "com1", "LPT9", "nul", "aux", "PRN", "com1.backup"]
-)
+@pytest.mark.parametrize("name", ["CON", "com1", "LPT9", "nul", "aux", "PRN", "com1.backup"])
 def test_windows_device_names_are_rejected(name):
     """
     ``boards/COM1/`` cannot be created on Windows, in any directory.
@@ -249,9 +241,7 @@ def test_creating_a_board_validates_the_name(tmp_path):
 
     with pytest.raises(ValueError, match="reserved"):
         manager.create_board("AUX")
-    assert not (
-        tmp_path / "boards"
-    ).exists(), "nothing may be written for a rejected name"
+    assert not (tmp_path / "boards").exists(), "nothing may be written for a rejected name"
 
 
 # =============================================================================

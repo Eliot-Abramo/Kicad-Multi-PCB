@@ -139,9 +139,7 @@ def run_drc(
             description=str(raw.get("description", "")),
             board=board_name,
         )
-        if violation.is_unconnected and _mentions_port(
-            violation.description, port_nets
-        ):
+        if violation.is_unconnected and _mentions_port(violation.description, port_nets):
             result.filtered += 1
             continue
         result.violations.append(violation)
@@ -200,9 +198,7 @@ def run_drc_all(
             return bool(cancel and cancel())
 
         ports = [p.effective_net() for p in board.ports.values()]
-        out[name] = run_drc(
-            install, root, name, pcb, ports=ports, parity=parity, pump=pump
-        )
+        out[name] = run_drc(install, root, name, pcb, ports=ports, parity=parity, pump=pump)
 
     if progress:
         progress(100, "Done")

@@ -75,20 +75,14 @@ class UpdatePlan:
         return out
 
     def enabled_items(self, action: Optional[str] = None) -> list[PlanItem]:
-        return [
-            i
-            for i in self.items
-            if i.enabled and (action is None or i.action == action)
-        ]
+        return [i for i in self.items if i.enabled and (action is None or i.action == action)]
 
     def is_noop(self) -> bool:
         return not any(i.action != SKIP for i in self.items)
 
     def summary(self) -> str:
         counts = self.counts()
-        parts = [
-            f"{ACTION_LABELS[a]} {counts[a]}" for a in ACTION_ORDER if counts.get(a)
-        ]
+        parts = [f"{ACTION_LABELS[a]} {counts[a]}" for a in ACTION_ORDER if counts.get(a)]
         return ", ".join(parts) if parts else "Nothing to do"
 
 
@@ -110,9 +104,7 @@ def plan_update(
     sch = index.schematic
 
     if not sch:
-        plan.warnings.append(
-            "No schematic data. Run a refresh so the netlist can be exported first."
-        )
+        plan.warnings.append("No schematic data. Run a refresh so the netlist can be exported first.")
 
     on_board: dict[str, ComponentRecord] = {}
     for rec in index.records():
@@ -140,9 +132,7 @@ def plan_update(
             )
         )
 
-    plan.conflicts = [
-        r for r in index.conflicts() if board in r.boards or r.intent == board
-    ]
+    plan.conflicts = [r for r in index.conflicts() if board in r.boards or r.intent == board]
     return plan
 
 
@@ -205,9 +195,7 @@ def _plan_one(
         return
 
     if elsewhere:
-        plan.items.append(
-            PlanItem(ref, SKIP, f"Placed on {', '.join(elsewhere)}", value=comp.value)
-        )
+        plan.items.append(PlanItem(ref, SKIP, f"Placed on {', '.join(elsewhere)}", value=comp.value))
         return
 
     if intent == board:
@@ -237,13 +225,9 @@ def _plan_one(
         return
 
     if intent is None:
-        plan.items.append(
-            PlanItem(ref, SKIP, "Not assigned to any board", value=comp.value)
-        )
+        plan.items.append(PlanItem(ref, SKIP, "Not assigned to any board", value=comp.value))
     else:
-        plan.items.append(
-            PlanItem(ref, SKIP, f"Assigned to {intent}", value=comp.value)
-        )
+        plan.items.append(PlanItem(ref, SKIP, f"Assigned to {intent}", value=comp.value))
 
 
 def _why(rec: Optional[ComponentRecord]) -> str:
@@ -278,9 +262,7 @@ def format_plan(plan: UpdatePlan) -> str:
     if plan.conflicts:
         lines.append(f"Conflicts touching this board ({len(plan.conflicts)}):")
         for rec in plan.conflicts[:50]:
-            lines.append(
-                f"  ! {rec.ref}: {Status.LABELS.get(rec.status, rec.status)} - {rec.hint()}"
-            )
+            lines.append(f"  ! {rec.ref}: {Status.LABELS.get(rec.status, rec.status)} - {rec.hint()}")
         lines.append("")
 
     for warning in plan.warnings:

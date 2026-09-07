@@ -157,9 +157,7 @@ class MultiBoardManager:
             self._drop_block_footprint(name)
             raise
 
-    def _setup_board_project(
-        self, board: BoardConfig, board_dir: Path, dir_name: str
-    ) -> None:
+    def _setup_board_project(self, board: BoardConfig, board_dir: Path, dir_name: str) -> None:
         """Write the sub-project file and link the schematic hierarchy."""
         source = self.ws.root_schematic()
         if source is None:
@@ -223,9 +221,7 @@ class MultiBoardManager:
                 f"{pcb_path} is not inside this project ({self.root}), so it cannot be imported."
             ) from exc
         if board_dir_for(self.root, rel) is None:
-            raise ValueError(
-                f"{rel} is not a board directory.\nBoards must live one level under boards/."
-            )
+            raise ValueError(f"{rel} is not a board directory.\nBoards must live one level under boards/.")
         board = BoardConfig(name=name, pcb_path=rel)
         self.config.boards[name] = board
         self.ws.save_config()
@@ -363,9 +359,7 @@ class MultiBoardManager:
         pcb = self._require_free(board_name)
         netlist = netlist_path(self.root)
         if not netlist.exists():
-            raise ValueError(
-                "No netlist is available. Refresh first so the schematic can be exported."
-            )
+            raise ValueError("No netlist is available. Refresh first so the schematic can be exported.")
 
         self._busy = True
         try:
@@ -396,10 +390,7 @@ class MultiBoardManager:
             if board_dir is None:
                 continue
             try:
-                if (
-                    link_file(source, board_dir / f"{board_dir.name}.kicad_sch")
-                    != "already"
-                ):
+                if link_file(source, board_dir / f"{board_dir.name}.kicad_sch") != "already":
                     repaired += 1
             except SchematicLinkError as exc:
                 failed.append(f"{name}: {exc}")

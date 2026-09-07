@@ -63,12 +63,8 @@ def message(
     return wx.MessageBox(text, caption, wx.OK | icon, parent)
 
 
-def confirm(
-    parent, text: str, caption: str = "Confirm", icon: int = wx.ICON_WARNING
-) -> bool:
-    return (
-        wx.MessageBox(text, caption, wx.YES_NO | wx.NO_DEFAULT | icon, parent) == wx.YES
-    )
+def confirm(parent, text: str, caption: str = "Confirm", icon: int = wx.ICON_WARNING) -> bool:
+    return wx.MessageBox(text, caption, wx.YES_NO | wx.NO_DEFAULT | icon, parent) == wx.YES
 
 
 class BaseDialog(wx.Dialog):
@@ -426,9 +422,7 @@ class FilterChips(wx.Panel):
         self.sizer = wx.WrapSizer(wx.HORIZONTAL)
         self.SetSizer(self.sizer)
 
-    def set_chips(
-        self, chips: Sequence[tuple[str, str, int, Optional[wx.Colour]]]
-    ) -> None:
+    def set_chips(self, chips: Sequence[tuple[str, str, int, Optional[wx.Colour]]]) -> None:
         """
         ``chips`` is ``(key, label, count, colour)``.
 
@@ -448,9 +442,7 @@ class FilterChips(wx.Panel):
         wx.CallAfter(self._rebuild)
 
     def _relabel(self, chips: list) -> None:
-        for (_key, button, _old), (_k, label, count, colour) in zip(
-            self._buttons, chips
-        ):
+        for (_key, button, _old), (_k, label, count, colour) in zip(self._buttons, chips):
             button.SetLabel(f"{label} ({count})" if count is not None else label)
             if colour is not None:
                 button.SetForegroundColour(self.theme.readable(colour))
@@ -506,9 +498,7 @@ class ReadOnlyText(wx.TextCtrl):
     """A read-only multi-line text area, themed as a matched pair."""
 
     def __init__(self, parent, value: str = "", *, mono: bool = True):
-        super().__init__(
-            parent, value=value, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_DONTWRAP
-        )
+        super().__init__(parent, value=value, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_DONTWRAP)
         self.SetFont(get_theme().mono_font() if mono else get_theme().body_font())
         apply_input(self)
 
@@ -528,9 +518,7 @@ class ProgressPanel(wx.Dialog):
     """
 
     def __init__(self, parent, title: str = "Working..."):
-        super().__init__(
-            parent, title=title, size=(460, 170), style=wx.CAPTION | wx.SYSTEM_MENU
-        )
+        super().__init__(parent, title=title, size=(460, 170), style=wx.CAPTION | wx.SYSTEM_MENU)
         self.theme = get_theme()
         self._cancelled = False
 
@@ -613,9 +601,7 @@ class VirtualListCtrl(wx.ListCtrl):
     """
 
     def __init__(self, parent, columns: Sequence[tuple[str, int]], **kwargs):
-        super().__init__(
-            parent, style=wx.LC_REPORT | wx.LC_VIRTUAL | wx.LC_SINGLE_SEL, **kwargs
-        )
+        super().__init__(parent, style=wx.LC_REPORT | wx.LC_VIRTUAL | wx.LC_SINGLE_SEL, **kwargs)
         self._rows: list[Sequence[str]] = []
         self._colors: list[Optional[wx.Colour]] = []
         self._attrs: dict[tuple, wx.ItemAttr] = {}

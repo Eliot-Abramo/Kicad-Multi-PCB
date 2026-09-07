@@ -225,9 +225,7 @@ class SearchHit:
 # =============================================================================
 
 
-def classify(
-    sch: Optional[SchComponent], intent: Optional[str], placements: Sequence[Placement]
-) -> str:
+def classify(sch: Optional[SchComponent], intent: Optional[str], placements: Sequence[Placement]) -> str:
     """
     The reconciliation truth table. Pure; one test per row.
 
@@ -351,9 +349,7 @@ class ComponentIndex:
         :meth:`search`. The list is rebuilt only when the records themselves are.
         """
         if self._sorted is None:
-            self._sorted = sorted(
-                self._records.values(), key=lambda r: rules_mod.natural_key(r.ref)
-            )
+            self._sorted = sorted(self._records.values(), key=lambda r: rules_mod.natural_key(r.ref))
         return self._sorted
 
     def by_board(self, board: str) -> list[ComponentRecord]:
@@ -364,10 +360,7 @@ class ComponentIndex:
 
     def board_counts(self) -> dict[str, dict[str, int]]:
         """``{board: {"placed": n, "pending": n, "conflicts": n}}`` for the board list."""
-        out = {
-            name: {"placed": 0, "pending": 0, "conflicts": 0}
-            for name in self.cfg.boards
-        }
+        out = {name: {"placed": 0, "pending": 0, "conflicts": 0} for name in self.cfg.boards}
         for rec in self.records():
             for b in rec.boards:
                 if b in out:
@@ -740,10 +733,7 @@ class ComponentIndex:
         root_sch = self.root / self.cfg.root_schematic
         paths = [root_sch]
         try:
-            paths += [
-                root_sch.parent / rel
-                for rel in sorted(find_hierarchical_sheets(root_sch))
-            ]
+            paths += [root_sch.parent / rel for rel in sorted(find_hierarchical_sheets(root_sch))]
         except OSError:
             pass
         out = []
@@ -774,10 +764,7 @@ class ComponentIndex:
         netlist = data.get("netlist") or {}
         if netlist.get("key") == self._sch_key():
             try:
-                self._sch = {
-                    row[0]: SchComponent.from_row(row)
-                    for row in netlist.get("comps", [])
-                }
+                self._sch = {row[0]: SchComponent.from_row(row) for row in netlist.get("comps", [])}
             except (IndexError, TypeError, ValueError):
                 self._sch = {}
 

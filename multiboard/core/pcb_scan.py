@@ -279,9 +279,7 @@ def _parse_footprint(node: sexpr.Node) -> PcbFootprint:
     layer = sexpr.atom(sexpr.find(node, "layer"), default="F.Cu")
 
     # KiCad 8+ writes (uuid "..."); 6/7 wrote (tstamp "...").
-    uuid = sexpr.atom(sexpr.find(node, "uuid")) or sexpr.atom(
-        sexpr.find(node, "tstamp")
-    )
+    uuid = sexpr.atom(sexpr.find(node, "uuid")) or sexpr.atom(sexpr.find(node, "tstamp"))
     path = sexpr.atom(sexpr.find(node, "path"))
 
     ref, value = _read_ref_value(node)
@@ -368,9 +366,7 @@ def validate_footprint_library(lib_dir: Path) -> list[str]:
 
     for mod in sorted(lib_dir.glob("*.kicad_mod")):
         try:
-            text = sexpr.strip_preamble(
-                mod.read_text(encoding="utf-8", errors="replace")
-            )
+            text = sexpr.strip_preamble(mod.read_text(encoding="utf-8", errors="replace"))
         except OSError as exc:
             problems.append(f"{mod.name}: unreadable ({exc})")
             continue

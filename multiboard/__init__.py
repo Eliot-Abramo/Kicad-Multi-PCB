@@ -82,9 +82,7 @@ def _register() -> None:
                 try:
                     require_supported()
                 except Exception as exc:
-                    wx.MessageBox(
-                        str(exc), "Multi-Board Manager", wx.OK | wx.ICON_ERROR
-                    )
+                    wx.MessageBox(str(exc), "Multi-Board Manager", wx.OK | wx.ICON_ERROR)
                     return
 
                 board = pcbnew.GetBoard()

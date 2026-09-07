@@ -109,9 +109,7 @@ class Theme:
         # A border that reads on both: mostly background, a little text.
         blended = colormath.blend(_rgb(self.text), _rgb(self.window_bg), 0.78)
         self.border = _wx(blended)
-        self.grid_line = _wx(
-            colormath.blend(_rgb(self.text), _rgb(self.window_bg), 0.85)
-        )
+        self.grid_line = _wx(colormath.blend(_rgb(self.text), _rgb(self.window_bg), 0.85))
 
         accents = _ACCENTS_DARK if self.is_dark else _ACCENTS_LIGHT
         bg = _rgb(self.window_bg)
@@ -120,9 +118,7 @@ class Theme:
 
         # A header strip that is always distinct from the content area, in the
         # same direction as the theme rather than always dark.
-        self.header_bg = _wx(
-            colormath.blend(_rgb(self.panel_bg), _rgb(self.text), 0.10)
-        )
+        self.header_bg = _wx(colormath.blend(_rgb(self.panel_bg), _rgb(self.text), 0.10))
         self.header_text = self.text
         self.header_muted = self.text_muted
 
@@ -154,17 +150,11 @@ class Theme:
 
     def board_color(self, rgb: RGB) -> wx.Colour:
         """A per-board identity colour, guaranteed readable in this mode."""
-        return _wx(
-            colormath.ensure_contrast(
-                rgb, _rgb(self.window_bg), colormath.MIN_CONTRAST_AA_LARGE
-            )
-        )
+        return _wx(colormath.ensure_contrast(rgb, _rgb(self.window_bg), colormath.MIN_CONTRAST_AA_LARGE))
 
     # -- fonts -------------------------------------------------------------
 
-    def font(
-        self, scale: float = 1.0, *, bold: bool = False, mono: bool = False
-    ) -> wx.Font:
+    def font(self, scale: float = 1.0, *, bold: bool = False, mono: bool = False) -> wx.Font:
         """
         A font derived from the system UI font.
 
@@ -173,9 +163,7 @@ class Theme:
         GTK desktop with an 11 pt system font its 15 pt header was oversized.
         Scaling relative to the system font is right everywhere.
         """
-        base = wx.SystemSettings.GetFont(
-            wx.SYS_ANSI_FIXED_FONT if mono else wx.SYS_DEFAULT_GUI_FONT
-        )
+        base = wx.SystemSettings.GetFont(wx.SYS_ANSI_FIXED_FONT if mono else wx.SYS_DEFAULT_GUI_FONT)
         f = wx.Font(base)
         f.SetPointSize(max(6, round(base.GetPointSize() * scale)))
         if bold:

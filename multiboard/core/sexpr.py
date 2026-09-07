@@ -153,9 +153,7 @@ def _skip_string(text: str, i: int) -> int:
     return _STRING.match(text, i).end()
 
 
-def parse_span(
-    text: str, start: int, end: int, keep: Optional[frozenset] = None
-) -> Node:
+def parse_span(text: str, start: int, end: int, keep: Optional[frozenset] = None) -> Node:
     """
     Build a tuple tree for ``text[start:end]``, which must be one node.
 
@@ -186,9 +184,7 @@ def parse(text: str) -> Node:
     return parse_span(text, i, len(text))
 
 
-def _parse_node(
-    text: str, i: int, end: int, keep: Optional[frozenset] = None
-) -> tuple[Optional[Node], int]:
+def _parse_node(text: str, i: int, end: int, keep: Optional[frozenset] = None) -> tuple[Optional[Node], int]:
     # Hand-rolled character loops, deliberately. Replacing these with compiled
     # regexes was measurably *slower* (0.8-0.87x): the tokens here are a few
     # characters long, so allocating a match object per token costs more than

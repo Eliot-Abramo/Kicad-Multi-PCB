@@ -112,9 +112,7 @@ def run_cli(
     start = time.monotonic()
     try:
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            proc = subprocess.Popen(
-                argv, stdout=out, stderr=err, cwd=str(cwd), env=child_env(), **kwargs
-            )
+            proc = subprocess.Popen(argv, stdout=out, stderr=err, cwd=str(cwd), env=child_env(), **kwargs)
             timed_out, cancelled = _wait(proc, start, timeout, pump)
             out.seek(0)
             err.seek(0)

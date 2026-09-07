@@ -17,10 +17,7 @@ def test_iter_spans_finds_top_level_nodes():
 
 def test_nested_footprints_are_not_yielded_at_depth_one():
     text = '(kicad_pcb (group (footprint "nested")) (footprint "top"))'
-    got = [
-        sexpr.atom(sexpr.parse_span(text, s, e))
-        for s, e in sexpr.iter_spans(text, "footprint")
-    ]
+    got = [sexpr.atom(sexpr.parse_span(text, s, e)) for s, e in sexpr.iter_spans(text, "footprint")]
     assert got == ["top"]
 
 

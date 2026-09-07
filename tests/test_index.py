@@ -43,9 +43,7 @@ def test_misplaced_when_placed_on_a_different_board():
 
 def test_duplicate_outranks_everything():
     """v1 silently kept whichever board came last in dict order."""
-    assert (
-        classify(_sch(), "Power", [_place("Power"), _place("IO")]) == Status.DUPLICATE
-    )
+    assert classify(_sch(), "Power", [_place("Power"), _place("IO")]) == Status.DUPLICATE
 
 
 def test_adopt_when_placed_without_intent():
@@ -247,17 +245,11 @@ def test_rule_pointing_elsewhere_reports_misplaced(indexed):
 def test_duplicate_across_boards_is_reported_not_overwritten(project, make_board):
     """The defect this whole model exists to fix."""
     cfg = ProjectConfig(root_schematic="demo.kicad_sch")
-    cfg.boards["A"] = BoardConfig(
-        "A", make_board("A", [{"ref": "R1", "fpid": "R:0402"}])
-    )
-    cfg.boards["B"] = BoardConfig(
-        "B", make_board("B", [{"ref": "R1", "fpid": "R:0402"}])
-    )
+    cfg.boards["A"] = BoardConfig("A", make_board("A", [{"ref": "R1", "fpid": "R:0402"}]))
+    cfg.boards["B"] = BoardConfig("B", make_board("B", [{"ref": "R1", "fpid": "R:0402"}]))
 
     netlist = project / "n.xml"
-    netlist.write_text(
-        make_netlist([{"ref": "R1", "footprint": "R:0402"}]), encoding="utf-8"
-    )
+    netlist.write_text(make_netlist([{"ref": "R1", "footprint": "R:0402"}]), encoding="utf-8")
 
     idx = ComponentIndex(project, cfg)
     idx.refresh(netlist=netlist)
@@ -270,9 +262,7 @@ def test_duplicate_across_boards_is_reported_not_overwritten(project, make_board
 
 def test_orphan_detected_when_schematic_drops_a_part(project, make_board):
     cfg = ProjectConfig(root_schematic="demo.kicad_sch")
-    cfg.boards["A"] = BoardConfig(
-        "A", make_board("A", [{"ref": "R1", "fpid": "R:0402"}])
-    )
+    cfg.boards["A"] = BoardConfig("A", make_board("A", [{"ref": "R1", "fpid": "R:0402"}]))
     netlist = project / "n.xml"
     netlist.write_text(make_netlist([]), encoding="utf-8")
 
@@ -300,9 +290,7 @@ def test_managed_footprints_are_not_components(project, make_board):
         ),
     )
     netlist = project / "n.xml"
-    netlist.write_text(
-        make_netlist([{"ref": "R1", "footprint": "R:0402"}]), encoding="utf-8"
-    )
+    netlist.write_text(make_netlist([{"ref": "R1", "footprint": "R:0402"}]), encoding="utf-8")
 
     idx = ComponentIndex(project, cfg)
     idx.refresh(netlist=netlist)
@@ -333,9 +321,7 @@ def test_exact_reference_outranks_prefix_matches(project, make_board):
     )
     netlist = project / "n.xml"
     netlist.write_text(
-        make_netlist(
-            [{"ref": f"R{n}", "footprint": "R:0402"} for n in (4, 40, 41, 42)]
-        ),
+        make_netlist([{"ref": f"R{n}", "footprint": "R:0402"} for n in (4, 40, 41, 42)]),
         encoding="utf-8",
     )
 
@@ -439,9 +425,7 @@ def test_refresh_builds_the_reverse_net_index(project, make_board):
     from multiboard.core.index import ComponentIndex
     from multiboard.core.netlist import netlist_path
 
-    rel = make_board(
-        "Power", [{"ref": "R1", "value": "10k", "pads": [("1", "GND"), ("2", "VCC")]}]
-    )
+    rel = make_board("Power", [{"ref": "R1", "value": "10k", "pads": [("1", "GND"), ("2", "VCC")]}])
     cfg = ProjectConfig()
     cfg.boards["Power"] = BoardConfig(name="Power", pcb_path=rel)
 

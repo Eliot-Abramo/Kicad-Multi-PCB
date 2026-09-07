@@ -22,9 +22,7 @@ class ConfigCorrupt(Exception):
     """Raised when a JSON file and its backup are both unreadable."""
 
 
-def atomic_write_json(
-    path: Path, obj: Any, *, backup: bool = True, indent: Optional[int] = 2
-) -> None:
+def atomic_write_json(path: Path, obj: Any, *, backup: bool = True, indent: Optional[int] = 2) -> None:
     """
     Write ``obj`` to ``path`` such that ``path`` is never partially written.
 
@@ -34,9 +32,7 @@ def atomic_write_json(
     """
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
@@ -84,18 +80,14 @@ def read_json(path: Path, *, recover: bool = True) -> tuple[Any, Optional[str]]:
         OSError,
         UnicodeDecodeError,
     ) as exc:
-        raise ConfigCorrupt(
-            f"{path.name} is unreadable and no usable backup exists ({exc})"
-        ) from exc
+        raise ConfigCorrupt(f"{path.name} is unreadable and no usable backup exists ({exc})") from exc
 
     return data, f"{path.name} was corrupt; recovered from {bak.name}"
 
 
 def write_json_compact(path: Path, obj: Any) -> None:
     """Atomic write with no indentation, for machine-only files like the index cache."""
-    fd, tmp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:

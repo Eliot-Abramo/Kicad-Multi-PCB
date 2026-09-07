@@ -137,9 +137,7 @@ class Workspace:
         if export:
             sch = self.root_schematic()
             if sch is None:
-                out.netlist_error = (
-                    "No root schematic is configured, so schematic data is unavailable."
-                )
+                out.netlist_error = "No root schematic is configured, so schematic data is unavailable."
             else:
                 if progress:
                     progress(2, "Exporting netlist...")
@@ -215,11 +213,7 @@ class Workspace:
         targets = (
             refs
             if refs is not None
-            else [
-                r.ref
-                for r in self.index.records()
-                if len(r.placements) == 1 and r.intent is None
-            ]
+            else [r.ref for r in self.index.records() if len(r.placements) == 1 and r.intent is None]
         )
         changed = 0
         for ref in targets:
@@ -295,9 +289,7 @@ class Workspace:
         variables.update(os.environ)
         return variables
 
-    def _parse_lib_table(
-        self, path: Path, variables: dict[str, str]
-    ) -> dict[str, Path]:
+    def _parse_lib_table(self, path: Path, variables: dict[str, str]) -> dict[str, Path]:
         if not path.exists():
             return {}
         try:
@@ -329,9 +321,7 @@ class Workspace:
         except OSError:
             return out
         for match in RE_LIB_ENTRY.finditer(content):
-            expanded = RE_VAR.sub(
-                lambda m: variables.get(m.group(1), m.group(0)), match.group(3)
-            )
+            expanded = RE_VAR.sub(lambda m: variables.get(m.group(1), m.group(0)), match.group(3))
             if "${" in expanded:
                 out.append(f"{match.group(1)}: {match.group(3)}")
         return out
@@ -354,9 +344,7 @@ class Workspace:
         )
 
         if not table.exists():
-            table.write_text(
-                f"(fp_lib_table\n  (version 7)\n{entry}\n)\n", encoding="utf-8"
-            )
+            table.write_text(f"(fp_lib_table\n  (version 7)\n{entry}\n)\n", encoding="utf-8")
             self._lib_paths = None
             return
 
@@ -372,9 +360,7 @@ class Workspace:
         else:
             content = content[:close].rstrip() + f"\n{entry}\n)" + content[close + 1 :]
 
-        table.write_text(
-            content if content.endswith("\n") else content + "\n", encoding="utf-8"
-        )
+        table.write_text(content if content.endswith("\n") else content + "\n", encoding="utf-8")
         self._lib_paths = None
 
     # =====================================================================

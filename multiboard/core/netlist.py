@@ -74,11 +74,7 @@ class SchComponent:
         return ""
 
     def to_row(self) -> list:
-        flags = (
-            int(self.dnp)
-            | (int(self.exclude_from_board) << 1)
-            | (int(self.exclude_from_bom) << 2)
-        )
+        flags = int(self.dnp) | (int(self.exclude_from_board) << 1) | (int(self.exclude_from_bom) << 2)
         return [
             self.ref,
             self.value,
@@ -183,9 +179,7 @@ def export_netlist(
     try:
         parse_netlist(out)
     except NetlistError as exc:
-        raise NetlistError(
-            f"Netlist export produced an unreadable file: {exc}"
-        ) from exc
+        raise NetlistError(f"Netlist export produced an unreadable file: {exc}") from exc
 
     return out
 
@@ -335,11 +329,7 @@ def iter_nets(path: Path) -> Iterator[tuple[str, list[tuple[str, str]]]]:
             continue
         name = elem.get("name") or ""
         if name:
-            nodes = [
-                (n.get("ref") or "", n.get("pin") or "")
-                for n in elem.iter("node")
-                if n.get("ref")
-            ]
+            nodes = [(n.get("ref") or "", n.get("pin") or "") for n in elem.iter("node") if n.get("ref")]
             yield name, nodes
         elem.clear()
 

@@ -137,9 +137,7 @@ def board_color(name: str, *, dark_mode: bool, index: int = -1) -> RGB:
     # Dark backgrounds need lighter, less saturated accents to stay readable;
     # light backgrounds need the opposite.
     lightness, saturation = (0.72, 0.55) if dark_mode else (0.38, 0.62)
-    rgb = tuple(
-        round(c * 255) for c in colorsys.hls_to_rgb(hue / 360.0, lightness, saturation)
-    )
+    rgb = tuple(round(c * 255) for c in colorsys.hls_to_rgb(hue / 360.0, lightness, saturation))
     return rgb  # type: ignore[return-value]
 
 

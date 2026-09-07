@@ -51,9 +51,7 @@ def make_pcb(footprints, *, version: int = 20260206, generator: str = "pcbnew") 
         for pad in fp.get("pads", []):
             if len(pad) == 3:
                 number, code, net = pad
-                out.append(
-                    f'    (pad "{number}" smd rect (at 0 0) (net {code} "{net}"))'
-                )
+                out.append(f'    (pad "{number}" smd rect (at 0 0) (net {code} "{net}"))')
             else:
                 number, net = pad
                 out.append(f'    (pad "{number}" smd rect (at 0 0) (net "{net}"))')
@@ -78,18 +76,14 @@ def make_netlist(components) -> str:
         parts.append(f'    <comp ref="{c["ref"]}">')
         parts.append(f"      <value>{c.get('value', '')}</value>")
         if c.get("footprint") is not None:
-            parts.append(
-                f"      <footprint>{c.get('footprint', 'Lib:Part')}</footprint>"
-            )
+            parts.append(f"      <footprint>{c.get('footprint', 'Lib:Part')}</footprint>")
         parts.append(f'      <libsource lib="dev" part="{c.get("part", "R")}"/>')
         for name, value in (c.get("properties") or {}).items():
             parts.append(f'      <property name="{name}" value="{value}"/>')
         for name, value in (c.get("fields") or {}).items():
             parts.append(f'      <fields><field name="{name}">{value}</field></fields>')
         parts.append(f'      <sheetpath names="{c.get("sheet", "/")}" tstamps="/"/>')
-        parts.append(
-            f"      <tstamps>{c.get('tstamps', '/uuid-' + c['ref'])}</tstamps>"
-        )
+        parts.append(f"      <tstamps>{c.get('tstamps', '/uuid-' + c['ref'])}</tstamps>")
         parts.append("    </comp>")
     parts.append("  </components>")
 
@@ -121,9 +115,7 @@ def _collect_nets(components):
 def project(tmp_path: Path) -> Path:
     """A minimal multi-board project skeleton."""
     (tmp_path / "demo.kicad_pro").write_text("{}", encoding="utf-8")
-    (tmp_path / "demo.kicad_sch").write_text(
-        "(kicad_sch (version 20260306))", encoding="utf-8"
-    )
+    (tmp_path / "demo.kicad_sch").write_text("(kicad_sch (version 20260306))", encoding="utf-8")
     (tmp_path / "boards").mkdir()
     return tmp_path
 
@@ -135,9 +127,7 @@ def make_board(project):
     def _make(name: str, footprints, **kwargs) -> str:
         d = project / "boards" / name
         d.mkdir(parents=True, exist_ok=True)
-        (d / f"{name}.kicad_pcb").write_text(
-            make_pcb(footprints, **kwargs), encoding="utf-8"
-        )
+        (d / f"{name}.kicad_pcb").write_text(make_pcb(footprints, **kwargs), encoding="utf-8")
         return f"boards/{name}/{name}.kicad_pcb"
 
     return _make

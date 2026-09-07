@@ -62,9 +62,9 @@ def test_pcm_layout(names):
     assert "metadata.json" in names
     assert "resources/icon.png" in names
     assert "plugins/__init__.py" in names, "the package must be importable as plugins/"
-    assert not any(
-        n.startswith("plugins/multiboard/") for n in names
-    ), "package files are nested one level too deep to be discovered"
+    assert not any(n.startswith("plugins/multiboard/") for n in names), (
+        "package files are nested one level too deep to be discovered"
+    )
     assert not any(n.startswith("multiboard-") for n in names)
 
 
@@ -93,9 +93,7 @@ def test_kicad_would_discover_the_extracted_package(archive, tmp_path):
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(zf.read(name))
 
-    assert (
-        target / "__init__.py"
-    ).exists(), "KiCad skips a plugins-directory entry with no __init__.py"
+    assert (target / "__init__.py").exists(), "KiCad skips a plugins-directory entry with no __init__.py"
 
     # Import it the way KiCad does: by directory name, from the plugins path.
     sys.path.insert(0, str(third_party / "plugins"))
@@ -168,9 +166,7 @@ def test_in_package_metadata_has_no_download_keys():
 def test_metadata_targets_kicad_10_only():
     from multiboard.version import MAX_KICAD, MIN_KICAD, __version__
 
-    entry = json.loads((ROOT / "metadata.json").read_text(encoding="utf-8"))[
-        "versions"
-    ][0]
+    entry = json.loads((ROOT / "metadata.json").read_text(encoding="utf-8"))["versions"][0]
     assert entry["version"] == __version__
     assert entry["kicad_version"] == f"{MIN_KICAD[0]}.{MIN_KICAD[1]}"
     # This is what stops PCM offering a SWIG plugin to KiCad 11.
@@ -247,13 +243,9 @@ def test_required_root_fields_present(metadata):
         assert metadata.get(field), f"PCM requires {field}"
 
 
-@pytest.mark.parametrize(
-    "field,limit", [("name", 200), ("description", 500), ("description_full", 5000)]
-)
+@pytest.mark.parametrize("field,limit", [("name", 200), ("description", 500), ("description_full", 5000)])
 def test_text_length_limits(metadata, field, limit):
-    assert (
-        len(metadata[field]) <= limit
-    ), f"{field} is {len(metadata[field])} chars, max {limit}"
+    assert len(metadata[field]) <= limit, f"{field} is {len(metadata[field])} chars, max {limit}"
 
 
 def test_status_and_platforms_are_valid(metadata):
@@ -267,6 +259,4 @@ def test_contact_keys_are_lowercase(metadata):
 
     for role in ("author", "maintainer"):
         for key in metadata.get(role, {}).get("contact") or {}:
-            assert re.match(
-                r"^[a-z][-a-z0-9 ]{0,48}[a-z0-9]$", key
-            ), f"{role}.contact.{key}"
+            assert re.match(r"^[a-z][-a-z0-9 ]{0,48}[a-z0-9]$", key), f"{role}.contact.{key}"

@@ -377,9 +377,7 @@ def can_link(directory: Path) -> tuple:
         probe.unlink(missing_ok=True)
 
 
-def find_hierarchical_sheets(
-    root_sch: Path, _seen: Optional[set[Path]] = None
-) -> set[str]:
+def find_hierarchical_sheets(root_sch: Path, _seen: Optional[set[Path]] = None) -> set[str]:
     """
     Relative paths of every sheet reachable from ``root_sch``.
 

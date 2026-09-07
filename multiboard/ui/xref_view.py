@@ -191,9 +191,7 @@ class XrefPanel(wx.Panel):
     def _build(self) -> None:
         sizer = wx.BoxSizer(wx.VERTICAL)
 
-        self.banner = Banner(
-            self, "", "warning", "Show conflicts", self._only_conflicts
-        )
+        self.banner = Banner(self, "", "warning", "Show conflicts", self._only_conflicts)
         self.banner.Hide()
         sizer.Add(self.banner, 0, wx.ALL | wx.EXPAND, SPACING_SM)
 
@@ -263,15 +261,11 @@ class XrefPanel(wx.Panel):
             (Status.SKIPPED, "Skipped"),
         ):
             if counts.get(key):
-                chips.append(
-                    (f"status:{key}", label, counts[key], self.theme.status_color(key))
-                )
+                chips.append((f"status:{key}", label, counts[key], self.theme.status_color(key)))
 
         by_board = self.index.stats.by_board or {}
         for name in self.board_names():
-            chips.append(
-                (f"board:{name}", name, by_board.get(name, 0), self.board_color(name))
-            )
+            chips.append((f"board:{name}", name, by_board.get(name, 0), self.board_color(name)))
 
         self.chips.set_chips(chips)
 
@@ -292,12 +286,7 @@ class XrefPanel(wx.Panel):
         if not query_parts:
             records = self.index.records()
         else:
-            records = [
-                h.record
-                for h in self.index.search(
-                    " ".join(query_parts), limit=XREF_ROW_LIMIT + 1
-                )
-            ]
+            records = [h.record for h in self.index.search(" ".join(query_parts), limit=XREF_ROW_LIMIT + 1)]
 
         self._truncated = len(records) > XREF_ROW_LIMIT
         return list(records[:XREF_ROW_LIMIT])
@@ -335,9 +324,7 @@ class XrefPanel(wx.Panel):
             delta = len(self._visible) - previous
             if delta > 0:
                 grid.ProcessTableMessage(
-                    gridlib.GridTableMessage(
-                        self.table, gridlib.GRIDTABLE_NOTIFY_ROWS_APPENDED, delta
-                    )
+                    gridlib.GridTableMessage(self.table, gridlib.GRIDTABLE_NOTIFY_ROWS_APPENDED, delta)
                 )
             elif delta < 0:
                 grid.ProcessTableMessage(
@@ -349,9 +336,7 @@ class XrefPanel(wx.Panel):
                     )
                 )
             grid.ProcessTableMessage(
-                gridlib.GridTableMessage(
-                    self.table, gridlib.GRIDTABLE_REQUEST_VIEW_GET_VALUES
-                )
+                gridlib.GridTableMessage(self.table, gridlib.GRIDTABLE_REQUEST_VIEW_GET_VALUES)
             )
         finally:
             grid.EndBatch()
@@ -365,17 +350,13 @@ class XrefPanel(wx.Panel):
             )
         else:
             self.count.SetLabel(
-                f"{shown} of {total} component(s)"
-                if shown != total
-                else f"{total} component(s)"
+                f"{shown} of {total} component(s)" if shown != total else f"{total} component(s)"
             )
 
     def _update_banner(self) -> None:
         conflicts = self.index.stats.conflicts
         if conflicts:
-            self.banner.set_message(
-                f"{conflicts} component(s) have conflicting assignments.", "warning"
-            )
+            self.banner.set_message(f"{conflicts} component(s) have conflicting assignments.", "warning")
             self.banner.Show()
         else:
             self.banner.Hide()
@@ -444,14 +425,8 @@ class XrefPanel(wx.Panel):
             # wx.ID_ANY, not a hand-rolled id range: the old one started at
             # ID_HIGHEST + 300 and ran into the main window's own ids at 100 boards.
             item = assign_menu.Append(wx.ID_ANY, name)
-            menu.Bind(
-                wx.EVT_MENU, lambda _e, n=name: self.on_assign(refs, n), id=item.GetId()
-            )
-        label = (
-            "Assign to board"
-            if len(records) == 1
-            else f"Assign {len(records)} to board"
-        )
+            menu.Bind(wx.EVT_MENU, lambda _e, n=name: self.on_assign(refs, n), id=item.GetId())
+        label = "Assign to board" if len(records) == 1 else f"Assign {len(records)} to board"
         menu.AppendSubMenu(assign_menu, label)
 
         adoptable = [r.ref for r in records if len(r.placements) == 1]
@@ -480,9 +455,7 @@ class XrefPanel(wx.Panel):
         for rec in records:
             row = self._visible.index(rec) if rec in self._visible else -1
             if row >= 0:
-                lines.append(
-                    "\t".join(self.table.GetValue(row, c) for c in range(len(COLUMNS)))
-                )
+                lines.append("\t".join(self.table.GetValue(row, c) for c in range(len(COLUMNS))))
         _copy("\n".join(lines))
 
     def _show_nets(self, rec: ComponentRecord) -> None:
@@ -493,11 +466,7 @@ class XrefPanel(wx.Panel):
                 lines.append(f"pad {pad}  {net}   (on {board})")
         message(
             self,
-            (
-                "\n".join(lines)
-                if lines
-                else f"{rec.ref} has no nets recorded on any board."
-            ),
+            ("\n".join(lines) if lines else f"{rec.ref} has no nets recorded on any board."),
             f"Nets on {rec.ref}",
         )
 

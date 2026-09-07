@@ -106,9 +106,7 @@ def test_board_entry_missing_its_name_key_is_tolerated():
 
 
 def test_dict_key_is_authoritative_over_a_drifted_name():
-    cfg = ProjectConfig.from_dict(
-        {"boards": {"Power": {"name": "Stale", "pcb_path": "p"}}}
-    )
+    cfg = ProjectConfig.from_dict({"boards": {"Power": {"name": "Stale", "pcb_path": "p"}}})
     assert cfg.boards["Power"].name == "Power"
 
 
@@ -185,9 +183,7 @@ def test_sheetpath_is_captured_and_normalised(tmp_path):
 
 def test_empty_boolean_property_means_true(tmp_path):
     p = tmp_path / "n.xml"
-    p.write_text(
-        make_netlist([{"ref": "R1", "properties": {"dnp": ""}}]), encoding="utf-8"
-    )
+    p.write_text(make_netlist([{"ref": "R1", "properties": {"dnp": ""}}]), encoding="utf-8")
     assert parse_netlist(p)["R1"].dnp
 
 
@@ -269,9 +265,7 @@ def test_scans_every_board_format_we_claim_to_support(tmp_path, version):
 def test_legacy_fp_text_reference_is_read(tmp_path):
     p = tmp_path / "b.kicad_pcb"
     p.write_text(
-        make_pcb(
-            [{"ref": "R1", "value": "10k", "legacy_text": True}], version=20211014
-        ),
+        make_pcb([{"ref": "R1", "value": "10k", "legacy_text": True}], version=20211014),
         encoding="utf-8",
     )
     fp = scan_pcb_file(p).footprints[0]
@@ -367,9 +361,7 @@ def test_detects_the_v1_block_footprint_damage(tmp_path):
         "  )\n)",
         encoding="utf-8",
     )
-    (lib / "Block_IO.kicad_mod").write_text(
-        '(footprint "Block_IO" (layer "F.Cu"))', encoding="utf-8"
-    )
+    (lib / "Block_IO.kicad_mod").write_text('(footprint "Block_IO" (layer "F.Cu"))', encoding="utf-8")
 
     problems = validate_footprint_library(lib)
     assert len(problems) == 1
@@ -382,9 +374,7 @@ def test_detects_the_v1_block_footprint_damage(tmp_path):
 
 
 def test_contrast_ratio_endpoints():
-    assert color.contrast_ratio((0, 0, 0), (255, 255, 255)) == pytest.approx(
-        21.0, abs=0.01
-    )
+    assert color.contrast_ratio((0, 0, 0), (255, 255, 255)) == pytest.approx(21.0, abs=0.01)
     assert color.contrast_ratio((128, 128, 128), (128, 128, 128)) == pytest.approx(1.0)
 
 
@@ -403,15 +393,12 @@ def test_ensure_contrast_lifts_an_unreadable_colour():
 
 def test_board_colours_are_stable_across_processes():
     """Python's hash() is randomised per run; a board must keep its colour."""
-    assert color.board_color("Power", dark_mode=False) == color.board_color(
-        "Power", dark_mode=False
-    )
+    assert color.board_color("Power", dark_mode=False) == color.board_color("Power", dark_mode=False)
 
 
 def test_board_colours_differ_between_boards():
     seen = {
-        color.board_color(n, dark_mode=False, index=i)
-        for i, n in enumerate(["Power", "IO", "Main", "RF"])
+        color.board_color(n, dark_mode=False, index=i) for i, n in enumerate(["Power", "IO", "Main", "RF"])
     }
     assert len(seen) == 4
 
@@ -561,23 +548,17 @@ def test_cli_version_ignores_stderr(monkeypatch):
 
 
 def test_cli_version_ignores_a_failed_run(monkeypatch):
-    monkeypatch.setattr(
-        kicad_env.subprocess, "run", _fake_run(stdout="10.0.5", returncode=1)
-    )
+    monkeypatch.setattr(kicad_env.subprocess, "run", _fake_run(stdout="10.0.5", returncode=1))
     assert kicad_env._cli_version(Path("/fake/kicad-cli")) is None
 
 
 def test_cli_version_reads_a_successful_run(monkeypatch):
-    monkeypatch.setattr(
-        kicad_env.subprocess, "run", _fake_run(stdout="10.0.5\n", returncode=0)
-    )
+    monkeypatch.setattr(kicad_env.subprocess, "run", _fake_run(stdout="10.0.5\n", returncode=0))
     assert kicad_env._cli_version(Path("/fake/kicad-cli")) == (10, 0, 5)
 
 
 def test_cli_version_rejects_an_implausible_stdout_version(monkeypatch):
-    monkeypatch.setattr(
-        kicad_env.subprocess, "run", _fake_run(stdout="wxWidgets 3.2.4", returncode=0)
-    )
+    monkeypatch.setattr(kicad_env.subprocess, "run", _fake_run(stdout="wxWidgets 3.2.4", returncode=0))
     assert kicad_env._cli_version(Path("/fake/kicad-cli")) is None
 
 
@@ -666,9 +647,7 @@ def test_trash_check_survives_an_unreadable_file(tmp_path, monkeypatch):
         Path,
         "stat",
         lambda self, *a, **k: (
-            (_ for _ in ()).throw(OSError("gone"))
-            if self.name == "a.bin"
-            else real_stat(self, *a, **k)
+            (_ for _ in ()).throw(OSError("gone")) if self.name == "a.bin" else real_stat(self, *a, **k)
         ),
     )
 

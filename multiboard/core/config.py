@@ -106,9 +106,7 @@ class AssignRule:
     enabled: bool = True
 
     def label(self) -> str:
-        return {"sheet": "Sheet", "refrange": "Refs", "regex": "Regex"}.get(
-            self.kind, self.kind
-        )
+        return {"sheet": "Sheet", "refrange": "Refs", "regex": "Regex"}.get(self.kind, self.kind)
 
     def to_dict(self) -> dict:
         return {
@@ -163,9 +161,7 @@ class BoardConfig:
         )
         for pname, pdata in (data.get("ports") or {}).items():
             cfg.ports[pname] = (
-                PortDef.from_dict(pdata, pname)
-                if isinstance(pdata, dict)
-                else PortDef(name=pname)
+                PortDef.from_dict(pdata, pname) if isinstance(pdata, dict) else PortDef(name=pname)
             )
         return cfg
 
@@ -201,9 +197,7 @@ class ProjectConfig:
         cfg = self.boards.pop(old)
         cfg.name = new
         self.boards[new] = cfg
-        self.assignments = {
-            r: (new if b == old else b) for r, b in self.assignments.items()
-        }
+        self.assignments = {r: (new if b == old else b) for r, b in self.assignments.items()}
         for rule in self.rules:
             if rule.board == old:
                 rule.board = new
@@ -243,23 +237,13 @@ class ProjectConfig:
             root_pcb=str(data.get("root_pcb", "")),
             variant=str(data.get("variant", "")),
             board_field=str(data.get("board_field") or DEFAULT_BOARD_FIELD),
-            assignments={
-                str(k): str(v) for k, v in (data.get("assignments") or {}).items()
-            },
-            rules=[
-                AssignRule.from_dict(r)
-                for r in (data.get("rules") or [])
-                if isinstance(r, dict)
-            ],
-            board_colors={
-                str(k): str(v) for k, v in (data.get("board_colors") or {}).items()
-            },
+            assignments={str(k): str(v) for k, v in (data.get("assignments") or {}).items()},
+            rules=[AssignRule.from_dict(r) for r in (data.get("rules") or []) if isinstance(r, dict)],
+            board_colors={str(k): str(v) for k, v in (data.get("board_colors") or {}).items()},
         )
         for name, bdata in (data.get("boards") or {}).items():
             cfg.boards[name] = (
-                BoardConfig.from_dict(bdata, name)
-                if isinstance(bdata, dict)
-                else BoardConfig(name, "")
+                BoardConfig.from_dict(bdata, name) if isinstance(bdata, dict) else BoardConfig(name, "")
             )
             # Keep the dict key authoritative so a rename cannot drift.
             cfg.boards[name].name = name
@@ -311,9 +295,7 @@ def migrate(raw: dict) -> dict:
     if isinstance(boards, dict):
         fixed = {}
         for name, bdata in boards.items():
-            fixed[name] = (
-                bdata if isinstance(bdata, dict) else {"name": name, "pcb_path": ""}
-            )
+            fixed[name] = bdata if isinstance(bdata, dict) else {"name": name, "pcb_path": ""}
         data["boards"] = fixed
     else:
         data["boards"] = {}

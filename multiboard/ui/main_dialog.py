@@ -103,9 +103,7 @@ class MainDialog(BaseDialog):
             dialog.Destroy()
 
     def __init__(self, parent, manager: MultiBoardManager):
-        super().__init__(
-            parent, "Multi-Board Manager", size=(1240, 820), min_size=(940, 620)
-        )
+        super().__init__(parent, "Multi-Board Manager", size=(1240, 820), min_size=(940, 620))
         self.manager = manager
         self.ws = manager.ws
         self._board_rows: list[str] = []
@@ -189,9 +187,7 @@ class MainDialog(BaseDialog):
         sizer = wx.BoxSizer(wx.VERTICAL)
 
         top = wx.BoxSizer(wx.HORIZONTAL)
-        self.board_filter = SearchBox(
-            panel, "Filter boards...", on_change=lambda _v: self._refresh_boards()
-        )
+        self.board_filter = SearchBox(panel, "Filter boards...", on_change=lambda _v: self._refresh_boards())
         top.Add(self.board_filter, 0, wx.RIGHT, SPACING_MD)
         self.open_badge = Badge(panel, "", self.theme.warning)
         self.open_badge.Hide()
@@ -209,9 +205,7 @@ class MainDialog(BaseDialog):
         self.grid.SetSelectionMode(gridlib.Grid.SelectRows)
         self.grid.Bind(gridlib.EVT_GRID_CELL_LEFT_DCLICK, lambda e: self._on_open())
         self.grid.Bind(gridlib.EVT_GRID_CELL_RIGHT_CLICK, self._on_board_menu)
-        self.grid.Bind(
-            gridlib.EVT_GRID_SELECT_CELL, lambda e: (self._sync_buttons(), e.Skip())
-        )
+        self.grid.Bind(gridlib.EVT_GRID_SELECT_CELL, lambda e: (self._sync_buttons(), e.Skip()))
         sizer.Add(self.grid, 1, wx.LEFT | wx.RIGHT | wx.EXPAND, SPACING_SM)
 
         tools = wx.BoxSizer(wx.HORIZONTAL)
@@ -296,9 +290,7 @@ class MainDialog(BaseDialog):
                 failed.append(f"{name}: {exc}")
 
         if outcome["rules"]:
-            self.ws.config.rules.extend(
-                r for r in outcome["rules"] if r.board in self.ws.config.boards
-            )
+            self.ws.config.rules.extend(r for r in outcome["rules"] if r.board in self.ws.config.boards)
             self.ws.save_config()
 
         if failed:
@@ -331,9 +323,7 @@ class MainDialog(BaseDialog):
         if result.cancelled:
             # Cancelling is a normal outcome now that long steps are interruptible;
             # say so plainly rather than reporting stale counts as if they were fresh.
-            self.status.set_status(
-                "Refresh cancelled - showing the previous index", "warning"
-            )
+            self.status.set_status("Refresh cancelled - showing the previous index", "warning")
             return
 
         self._update_banner(result)
@@ -360,9 +350,7 @@ class MainDialog(BaseDialog):
         problems = [c for c in report.checks if c.level == ERROR]
         warnings = [c for c in report.checks if c.level == WARN]
         if problems:
-            self.banner.set_message(
-                f"{problems[0].title}. Run Doctor to fix it.", "error"
-            )
+            self.banner.set_message(f"{problems[0].title}. Run Doctor to fix it.", "error")
             self.banner.Show()
         elif warnings:
             self.banner.set_message(
@@ -383,9 +371,7 @@ class MainDialog(BaseDialog):
         rows = [
             (name, board)
             for name, board in sorted(self.ws.config.boards.items())
-            if not needle
-            or needle in name.lower()
-            or needle in (board.description or "").lower()
+            if not needle or needle in name.lower() or needle in (board.description or "").lower()
         ]
         self._board_rows = [name for name, _ in rows]
 
@@ -399,9 +385,7 @@ class MainDialog(BaseDialog):
 
             for row, (name, board) in enumerate(rows):
                 c = counts.get(name, {})
-                marker = (
-                    "open" if name in open_boards else "here" if name == current else ""
-                )
+                marker = "open" if name in open_boards else "here" if name == current else ""
                 grid.SetCellValue(row, 0, marker)
                 grid.SetCellValue(row, 1, name)
                 grid.SetCellValue(row, 2, str(c.get("placed", 0)))
@@ -417,17 +401,13 @@ class MainDialog(BaseDialog):
                 set_row_colors(grid, row, len(BOARD_COLUMNS), bg, fg)
                 grid.SetCellTextColour(row, 1, self.theme.readable(accent, bg))
                 if c.get("conflicts"):
-                    grid.SetCellTextColour(
-                        row, 4, self.theme.readable(self.theme.error, bg)
-                    )
+                    grid.SetCellTextColour(row, 4, self.theme.readable(self.theme.error, bg))
         finally:
             grid.EndBatch()
         grid.ForceRefresh()
 
         if open_boards:
-            self.open_badge.set_label(
-                f"{len(open_boards)} open in KiCad", self.theme.warning
-            )
+            self.open_badge.set_label(f"{len(open_boards)} open in KiCad", self.theme.warning)
             self.open_badge.Show()
         else:
             self.open_badge.Hide()
@@ -446,9 +426,7 @@ class MainDialog(BaseDialog):
     # -- helpers -----------------------------------------------------------
 
     def _board_color(self, name: str) -> wx.Colour:
-        return self.theme.board_color(
-            self.ws.board_color(name, dark_mode=self.theme.is_dark)
-        )
+        return self.theme.board_color(self.ws.board_color(name, dark_mode=self.theme.is_dark))
 
     def _selected_board(self) -> Optional[str]:
         rows = self.grid.GetSelectedRows()
@@ -528,9 +506,7 @@ class MainDialog(BaseDialog):
     # -- actions -----------------------------------------------------------
 
     def _on_palette(self) -> None:
-        open_palette(
-            self, self.ws.index, self._jump_to, self._run_command, self._board_color
-        )
+        open_palette(self, self.ws.index, self._jump_to, self._run_command, self._board_color)
 
     def _run_command(self, command: str) -> None:
         {
@@ -654,18 +630,14 @@ class MainDialog(BaseDialog):
         try:
             outcome = self.manager.create_board(name, description)
         except Exception as exc:
-            message(
-                self, f"Could not create '{name}'.\n\n{exc}", "New board", wx.ICON_ERROR
-            )
+            message(self, f"Could not create '{name}'.\n\n{exc}", "New board", wx.ICON_ERROR)
             return
 
         self._refresh(force=True)
         note = ("\n\n" + "\n".join(outcome.warnings)) if outcome.warnings else ""
         self.status.set_status(f"Created board '{name}'", "ok")
         if note:
-            message(
-                self, f"Board '{name}' created.{note}", "New board", wx.ICON_WARNING
-            )
+            message(self, f"Board '{name}' created.{note}", "New board", wx.ICON_WARNING)
 
     def _on_open(self) -> None:
         name = self._selected_board()
@@ -719,9 +691,7 @@ class MainDialog(BaseDialog):
 
         message(
             self,
-            f"Could not open '{name}'.\n\n"
-            + "\n".join(failures)
-            + f"\n\nThe file is at:\n{target}",
+            f"Could not open '{name}'.\n\n" + "\n".join(failures) + f"\n\nThe file is at:\n{target}",
             "Open",
             wx.ICON_ERROR,
         )
@@ -742,9 +712,7 @@ class MainDialog(BaseDialog):
             return
 
         def work(progress, cancelled):
-            return self.manager.apply_update(
-                name, reviewed, progress=progress, cancel=cancelled
-            )
+            return self.manager.apply_update(name, reviewed, progress=progress, cancel=cancelled)
 
         try:
             result = run_with_progress(self, f"Updating {name}", work)
@@ -809,9 +777,7 @@ class MainDialog(BaseDialog):
             message(self, str(exc), "Board is open", wx.ICON_WARNING)
             return
         except Exception as exc:
-            message(
-                self, f"Could not delete '{name}'.\n\n{exc}", "Delete", wx.ICON_ERROR
-            )
+            message(self, f"Could not delete '{name}'.\n\n{exc}", "Delete", wx.ICON_ERROR)
             return
 
         self._refresh(force=True)
@@ -846,11 +812,7 @@ class MainDialog(BaseDialog):
 
     def _on_doctor(self) -> None:
         report = self.ws.doctor(backend=self.manager.backend)
-        show_modal(
-            DoctorDialog(
-                self, report, lambda: self.ws.doctor(backend=self.manager.backend)
-            )
-        )
+        show_modal(DoctorDialog(self, report, lambda: self.ws.doctor(backend=self.manager.backend)))
         self._refresh_boards()
         self._update_banner()
 
@@ -889,9 +851,7 @@ class MainDialog(BaseDialog):
         menu.Destroy()
 
     def _on_rename(self, name: str) -> None:
-        with wx.TextEntryDialog(
-            self, "New name for this board:", "Rename", name
-        ) as dialog:
+        with wx.TextEntryDialog(self, "New name for this board:", "Rename", name) as dialog:
             if dialog.ShowModal() != wx.ID_OK:
                 return
             new = dialog.GetValue().strip()
@@ -929,9 +889,7 @@ class MainDialog(BaseDialog):
             progress(20, f"Building fabrication output for {name}...")
 
             def pump(elapsed: float) -> bool:
-                progress(
-                    20, f"Building fabrication output for {name}... ({elapsed:.0f}s)"
-                )
+                progress(20, f"Building fabrication output for {name}... ({elapsed:.0f}s)")
                 return bool(cancelled())
 
             return run_fab(self.ws.install, self.ws.root, board, pump=pump)

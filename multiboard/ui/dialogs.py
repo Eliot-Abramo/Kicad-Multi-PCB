@@ -103,9 +103,7 @@ class DoctorDialog(BaseDialog):
             }[worst]
         )
 
-        first_problem = next(
-            (i for i, c in enumerate(self.report.checks) if c.needs_attention), 0
-        )
+        first_problem = next((i for i, c in enumerate(self.report.checks) if c.needs_attention), 0)
         if self.report.checks:
             self.list.SetSelection(first_problem)
         self._show_detail()
@@ -143,8 +141,7 @@ class DoctorDialog(BaseDialog):
             return
         if not confirm(
             self,
-            f"Run {len(fixable)} repair(s)?\n\n"
-            + "\n".join(f"  {c.fix_label or c.title}" for c in fixable),
+            f"Run {len(fixable)} repair(s)?\n\n" + "\n".join(f"  {c.fix_label or c.title}" for c in fixable),
             "Fix all",
         ):
             return
@@ -204,9 +201,7 @@ class NewBoardDialog(BaseDialog):
         self.name.Bind(wx.EVT_TEXT, lambda e: self._validate())
         sizer.Add(self.name, 0, wx.ALL | wx.EXPAND, SPACING_MD)
 
-        sizer.Add(
-            self._label("Description (optional)"), 0, wx.LEFT | wx.RIGHT, SPACING_MD
-        )
+        sizer.Add(self._label("Description (optional)"), 0, wx.LEFT | wx.RIGHT, SPACING_MD)
         self.desc = wx.TextCtrl(self, style=wx.TE_MULTILINE, size=(-1, 70))
         apply_input(self.desc)
         sizer.Add(self.desc, 1, wx.ALL | wx.EXPAND, SPACING_MD)
@@ -239,9 +234,7 @@ class NewBoardDialog(BaseDialog):
 
         if error:
             self.hint.SetLabel(error if name else "Enter a name to continue.")
-            self.hint.SetForegroundColour(
-                self.theme.warning if name else self.theme.text_muted
-            )
+            self.hint.SetForegroundColour(self.theme.warning if name else self.theme.text_muted)
             self.ok.Disable()
             return False
 
@@ -365,12 +358,9 @@ class PortsDialog(BaseDialog):
     """The port list for one board."""
 
     def __init__(self, parent, board: BoardConfig):
-        super().__init__(
-            parent, f"Ports on '{board.name}'", size=(620, 460), min_size=(540, 400)
-        )
+        super().__init__(parent, f"Ports on '{board.name}'", size=(620, 460), min_size=(540, 400))
         self.ports: dict[str, PortDef] = {
-            n: PortDef(p.name, p.net, p.side, p.position)
-            for n, p in board.ports.items()
+            n: PortDef(p.name, p.net, p.side, p.position) for n, p in board.ports.items()
         }
         self._rows: list[str] = []
         self._build()
@@ -380,9 +370,7 @@ class PortsDialog(BaseDialog):
         sizer = wx.BoxSizer(wx.VERTICAL)
 
         self.list = wx.ListCtrl(self, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
-        for i, (label, width) in enumerate(
-            [("Port", 150), ("Net", 170), ("Edge", 90), ("Position", 90)]
-        ):
+        for i, (label, width) in enumerate([("Port", 150), ("Net", 170), ("Edge", 90), ("Position", 90)]):
             self.list.InsertColumn(i, label, width=width)
         self.list.SetFont(self.theme.body_font())
         apply_input(self.list)
@@ -460,9 +448,7 @@ class PortsDialog(BaseDialog):
 class ReportDialog(BaseDialog):
     """A monospace report: DRC, health, anything textual."""
 
-    def __init__(
-        self, parent, title: str, body: str, *, headline: str = "", kind: str = "info"
-    ):
+    def __init__(self, parent, title: str, body: str, *, headline: str = "", kind: str = "info"):
         super().__init__(parent, title, size=(860, 600), min_size=(640, 440))
         sizer = wx.BoxSizer(wx.VERTICAL)
 
@@ -516,9 +502,7 @@ class OnboardingDialog(BaseDialog):
     """
 
     def __init__(self, parent, root: Path, sheets: list[str], detected: list[dict]):
-        super().__init__(
-            parent, "Set up multi-board", size=(680, 560), min_size=(600, 480)
-        )
+        super().__init__(parent, "Set up multi-board", size=(680, 560), min_size=(600, 480))
         self.root = root
         self.sheets = sheets
         self.detected = detected or detect_root_files(root)
@@ -589,10 +573,7 @@ class OnboardingDialog(BaseDialog):
 
         self.choice = wx.Choice(
             self.body,
-            choices=[
-                f"{c['project']}  ->  {c['schematic'] or 'no schematic'}"
-                for c in self.detected
-            ],
+            choices=[f"{c['project']}  ->  {c['schematic'] or 'no schematic'}" for c in self.detected],
         )
         self.choice.SetSelection(0)
         self.body_sizer.Add(self.choice, 0, wx.EXPAND | wx.BOTTOM, SPACING_MD)

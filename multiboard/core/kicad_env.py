@@ -31,9 +31,7 @@ from ..constants import DISCOVERY_CACHE_TTL
 
 Version = tuple[int, ...]
 
-_VERSION_DIR = re.compile(
-    r"^(?:kicad[-_]?)?(\d+)(?:\.(\d+))?(?:\.(\d+))?$", re.IGNORECASE
-)
+_VERSION_DIR = re.compile(r"^(?:kicad[-_]?)?(\d+)(?:\.(\d+))?(?:\.(\d+))?$", re.IGNORECASE)
 _CLI_VERSION = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 
 
@@ -56,11 +54,7 @@ class KicadInstall:
 
     @property
     def major_minor(self) -> str:
-        return (
-            f"{self.version[0]}.{self.version[1]}"
-            if len(self.version) >= 2
-            else str(self.major)
-        )
+        return f"{self.version[0]}.{self.version[1]}" if len(self.version) >= 2 else str(self.major)
 
     def describe(self) -> str:
         v = ".".join(str(p) for p in self.version) if self.version else "unknown"
@@ -251,12 +245,7 @@ def _fixed_cli_candidates() -> list[tuple[str, Path, tuple[str, ...]]]:
             out.append(
                 (
                     "appbundle",
-                    base
-                    / "KiCad"
-                    / "KiCad.app"
-                    / "Contents"
-                    / "MacOS"
-                    / _exe("kicad-cli"),
+                    base / "KiCad" / "KiCad.app" / "Contents" / "MacOS" / _exe("kicad-cli"),
                     (),
                 )
             )

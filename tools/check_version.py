@@ -78,9 +78,7 @@ def check_metadata() -> None:
 
     expected_min = f"{MIN_KICAD[0]}.{MIN_KICAD[1]}"
     if entry.get("kicad_version") != expected_min:
-        fail(
-            f"metadata.json kicad_version {entry.get('kicad_version')!r} != {expected_min!r}"
-        )
+        fail(f"metadata.json kicad_version {entry.get('kicad_version')!r} != {expected_min!r}")
     else:
         print(f"ok   metadata.json kicad_version {expected_min}")
 
@@ -105,9 +103,7 @@ def check_metadata() -> None:
         print("ok   metadata.json runtime swig")
 
     if entry.get("status") not in PCM_STATUSES:
-        fail(
-            f"metadata.json status {entry.get('status')!r} is not one of {PCM_STATUSES}"
-        )
+        fail(f"metadata.json status {entry.get('status')!r} is not one of {PCM_STATUSES}")
 
     platforms = entry.get("platforms")
     if platforms is not None:
@@ -130,9 +126,7 @@ def check_package_fields(data: dict) -> None:
         ("name", 200),
     ):
         if len(data.get(field, "")) > limit:
-            fail(
-                f"metadata.json {field} exceeds {limit} characters ({len(data.get(field, ''))})"
-            )
+            fail(f"metadata.json {field} exceeds {limit} characters ({len(data.get(field, ''))})")
 
     identifier = data.get("identifier", "")
     if not PCM_IDENTIFIER.match(identifier):
@@ -169,15 +163,11 @@ def check_package_fields(data: dict) -> None:
         person = data.get(role) or {}
         if not person:
             continue
-        bad_keys = [
-            k for k in (person.get("contact") or {}) if not PCM_CONTACT_KEY.match(k)
-        ]
+        bad_keys = [k for k in (person.get("contact") or {}) if not PCM_CONTACT_KEY.match(k)]
         if bad_keys:
             fail(f"metadata.json {role}.contact keys must be lowercase: {bad_keys}")
 
-    long_resources = [
-        k for k, v in (data.get("resources") or {}).items() if len(v) > 500
-    ]
+    long_resources = [k for k, v in (data.get("resources") or {}).items() if len(v) > 500]
     if long_resources:
         fail(f"metadata.json resources exceed 500 characters: {long_resources}")
 
@@ -218,9 +208,7 @@ def check_no_hardcoded_versions() -> None:
 
 
 def main() -> int:
-    print(
-        f"version.py: {__version__}, KiCad {MIN_KICAD[0]}.{MIN_KICAD[1]}-{MAX_KICAD[0]}.{MAX_KICAD[1]}\n"
-    )
+    print(f"version.py: {__version__}, KiCad {MIN_KICAD[0]}.{MIN_KICAD[1]}-{MAX_KICAD[0]}.{MAX_KICAD[1]}\n")
     check_pyproject()
     check_metadata()
     check_readme()
