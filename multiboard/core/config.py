@@ -94,8 +94,9 @@ class AssignRule:
         assigned from one rule per board, and parts added later inherit
         automatically.
     ``refrange``
-        ``R100-R199, U1, C10-C19``. Compares the numeric part numerically, so
-        ``R9`` does not match ``R1-R10``.
+        ``R100-R199, U1, C10-C19``. Compares the numeric part as a number, so
+        ``R9`` *does* match ``R1-R10`` -- which a lexical range would miss,
+        since ``"R9"`` sorts after ``"R10"``.
     ``regex``
         ``re.fullmatch`` against the reference.
     """
